@@ -2,6 +2,27 @@
 
 The easytier-uptime system can now be deployed as a distributed probe node that integrates with a backend API for centralized peer discovery and status reporting.
 
+## Two Deployment Options
+
+### Option 1: neo-uptime-node (Recommended)
+
+A standalone, independently compiled binary specifically designed for distributed probing. This is the **recommended** approach for production deployments.
+
+**Advantages:**
+- Completely decoupled from the main easytier-uptime service
+- Smaller binary size, focused only on probing functionality  
+- Easier to deploy and scale independently
+- No database or frontend dependencies
+- Better isolation and fault tolerance
+
+**Usage:** See the [neo-uptime-node usage guide](./README.md#neo-uptime-node-使用指南) in README.md
+
+### Option 2: easytier-uptime with Distributed Mode
+
+The original easytier-uptime binary can also run in distributed probe mode.
+
+**Usage:** Continue reading this document for configuration details
+
 ## Overview
 
 In distributed mode, the probe:
@@ -10,7 +31,7 @@ In distributed mode, the probe:
 - Reports its own status back to the backend
 - Can be deployed across multiple regions/locations
 
-## Configuration
+## Configuration (easytier-uptime distributed mode)
 
 ### Environment Variables
 
@@ -90,12 +111,28 @@ Content-Type: application/json
   "response_time": 50,
   "metadata": {
     "version": "0.1.0",
-    "total_monitored_nodes": 10,
-    "healthy_nodes": 8,
-    "region": "us-west"
+    "region": "us-west",
+    "peers_count": 10,
+    "reachable_peers": 8,
+    "avg_peer_rtt": 45,
+    "max_peer_rtt": 120
   }
 }
 ```
+
+**Field Descriptions:**
+- `status` (required): Probe node status, supports `Online` / `Offline`
+- `response_time` (optional): **Average latency from probe to all peers (milliseconds)**
+  - Calculation: Average RTT of all successfully probed peers
+  - Type: Integer (milliseconds)
+  - **Note:** Fixed issue where microseconds were incorrectly reported - now correctly converted to milliseconds
+- `metadata` (optional): Additional information
+  - `version`: Probe node version
+  - `region`: Node region identifier
+  - `peers_count`: Number of peers fetched in this round
+  - `reachable_peers`: Number of successfully probed peers
+  - `avg_peer_rtt`: Average RTT (milliseconds)
+  - `max_peer_rtt`: Maximum RTT (milliseconds)
 
 **Response:**
 ```json
@@ -105,6 +142,15 @@ Content-Type: application/json
   "data": null
 }
 ```
+
+## Latency Reporting Fix
+
+**Important:** In previous versions, there was an issue where latency values were reported in microseconds instead of milliseconds. This has been fixed:
+
+- EasyTier internally uses **microseconds (μs)** for latency measurements
+- Both distributed modes now automatically convert to **milliseconds (ms)** before reporting
+- The `response_time` field is guaranteed to be in integer milliseconds
+- Conversion formula: `RTT_ms = RTT_us / 1000`
 
 ## Running Examples
 

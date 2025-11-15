@@ -3,6 +3,14 @@ name = "easytier-uptime"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "easytier-uptime"
+path = "src/main.rs"
+
+[[bin]]
+name = "neo-uptime-node"
+path = "src/neo_uptime_node.rs"
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"

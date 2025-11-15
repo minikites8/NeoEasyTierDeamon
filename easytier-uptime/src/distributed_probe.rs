@@ -136,21 +136,72 @@ impl DistributedProbe {
                     .filter(|(_, status, _)| matches!(status, crate::db::HealthStatus::Healthy))
                     .count();
 
+                // Calculate average response time (convert from microseconds to milliseconds)
+                let avg_response_time = if !all_statuses.is_empty() {
+                    let rtt_values: Vec<i32> = all_statuses
+                        .iter()
+                        .filter(|(_, status, _)| matches!(status, crate::db::HealthStatus::Healthy))
+                        .filter_map(|(node_id, _, _)| {
+                            health_checker
+                                .get_node_memory_record(*node_id)
+                                .and_then(|r| r.get_last_response_time())
+                        })
+                        .collect();
+
+                    if !rtt_values.is_empty() {
+                        // Convert from microseconds to milliseconds
+                        let sum_ms: i32 = rtt_values.iter().map(|&rtt_us| rtt_us / 1000).sum();
+                        Some(sum_ms / rtt_values.len() as i32)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Calculate max RTT for metadata
+                let max_response_time = if !all_statuses.is_empty() {
+                    all_statuses
+                        .iter()
+                        .filter(|(_, status, _)| matches!(status, crate::db::HealthStatus::Healthy))
+                        .filter_map(|(node_id, _, _)| {
+                            health_checker
+                                .get_node_memory_record(*node_id)
+                                .and_then(|r| r.get_last_response_time())
+                        })
+                        .max()
+                        .map(|rtt_us| rtt_us / 1000) // Convert to milliseconds
+                } else {
+                    None
+                };
+
                 let mut metadata = HashMap::new();
                 metadata.insert(
                     "version".to_string(),
                     serde_json::Value::String(version.clone()),
                 );
                 metadata.insert(
-                    "total_monitored_nodes".to_string(),
+                    "peers_count".to_string(),
                     serde_json::Value::Number(total_nodes.into()),
                 );
                 metadata.insert(
-                    "healthy_nodes".to_string(),
+                    "reachable_peers".to_string(),
                     serde_json::Value::Number(healthy_nodes.into()),
                 );
                 if let Some(r) = &region {
                     metadata.insert("region".to_string(), serde_json::Value::String(r.clone()));
+                }
+                if let Some(avg) = avg_response_time {
+                    metadata.insert(
+                        "avg_peer_rtt".to_string(),
+                        serde_json::Value::Number(avg.into()),
+                    );
+                }
+                if let Some(max) = max_response_time {
+                    metadata.insert(
+                        "max_peer_rtt".to_string(),
+                        serde_json::Value::Number(max.into()),
+                    );
                 }
 
                 // Determine overall status
@@ -158,25 +209,6 @@ impl DistributedProbe {
                     "Online" // No nodes to monitor yet, but probe is running
                 } else {
                     "Online" // Probe is working regardless of peer health
-                };
-
-                // Calculate average response time (simple heuristic)
-                let avg_response_time = if !all_statuses.is_empty() {
-                    let sum: i32 = all_statuses
-                        .iter()
-                        .filter_map(|(node_id, _, _)| {
-                            health_checker
-                                .get_node_memory_record(*node_id)
-                                .and_then(|r| r.get_last_response_time())
-                        })
-                        .sum();
-                    if sum > 0 {
-                        Some(sum / all_statuses.len() as i32)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
                 };
 
                 match backend_client
