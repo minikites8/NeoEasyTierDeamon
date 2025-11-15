@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub logging: LoggingConfig,
     pub cors: CorsConfig,
     pub security: SecurityConfig,
+    pub distributed: DistributedConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,24 @@ pub struct SecurityConfig {
     pub secret_key: String,
     pub jwt_secret: String,
     pub admin_password: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DistributedConfig {
+    /// Enable distributed probe mode
+    pub enabled: bool,
+    /// Backend base URL (e.g., "http://backend.example.com")
+    pub backend_base_url: Option<String>,
+    /// Node token for authentication
+    pub node_token: Option<String>,
+    /// API key for peer discovery (optional)
+    pub api_key: Option<String>,
+    /// Region identifier (optional)
+    pub region: Option<String>,
+    /// Interval for fetching peers from backend (seconds)
+    pub peer_fetch_interval: u64,
+    /// Interval for reporting node status to backend (seconds)
+    pub status_report_interval: u64,
 }
 
 impl Default for AppConfig {
@@ -136,6 +155,22 @@ impl AppConfig {
             admin_password: env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "admin123".to_string()),
         };
 
+        let distributed_config = DistributedConfig {
+            enabled: env::var("DISTRIBUTED_MODE_ENABLED")
+                .map(|s| s.parse().unwrap_or(false))
+                .unwrap_or(false),
+            backend_base_url: env::var("BACKEND_BASE_URL").ok(),
+            node_token: env::var("NODE_TOKEN").ok(),
+            api_key: env::var("API_KEY").ok(),
+            region: env::var("REGION").ok(),
+            peer_fetch_interval: env::var("PEER_FETCH_INTERVAL")
+                .map(|s| s.parse().unwrap_or(60))
+                .unwrap_or(60),
+            status_report_interval: env::var("STATUS_REPORT_INTERVAL")
+                .map(|s| s.parse().unwrap_or(30))
+                .unwrap_or(30),
+        };
+
         Ok(AppConfig {
             server: server_config,
             database: database_config,
@@ -143,6 +178,7 @@ impl AppConfig {
             logging: logging_config,
             cors: cors_config,
             security: security_config,
+            distributed: distributed_config,
         })
     }
 
@@ -192,6 +228,15 @@ impl AppConfig {
                 secret_key: "default-secret-key".to_string(),
                 jwt_secret: "default-jwt-secret".to_string(),
                 admin_password: "admin123".to_string(),
+            },
+            distributed: DistributedConfig {
+                enabled: false,
+                backend_base_url: None,
+                node_token: None,
+                api_key: None,
+                region: None,
+                peer_fetch_interval: 60,
+                status_report_interval: 30,
             },
         }
     }
