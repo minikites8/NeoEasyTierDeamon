@@ -55,7 +55,7 @@ parking_lot = "0.12"
 once_cell = "1.19"
 
 # EasyTier core
-easytier = { path = "../../easytier" }
+easytier = { path = "../easytier" }
 
 mimalloc = { version = "*" }
 
