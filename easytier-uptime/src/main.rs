@@ -45,11 +45,7 @@ struct Args {
     #[arg(long, env = "BACKEND_BASE_URL")]
     backend_base_url: Option<String>,
 
-    /// Node token for authentication with backend
-    #[arg(long, env = "NODE_TOKEN")]
-    node_token: Option<String>,
-
-    /// API key for peer discovery (optional)
+    /// API key for authentication with backend
     #[arg(long, env = "API_KEY")]
     api_key: Option<String>,
 
@@ -72,9 +68,6 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(url) = args.backend_base_url {
         config.distributed.backend_base_url = Some(url);
-    }
-    if let Some(token) = args.node_token {
-        config.distributed.node_token = Some(token);
     }
     if let Some(key) = args.api_key {
         config.distributed.api_key = Some(key);

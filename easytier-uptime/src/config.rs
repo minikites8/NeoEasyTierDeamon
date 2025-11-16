@@ -57,9 +57,7 @@ pub struct DistributedConfig {
     pub enabled: bool,
     /// Backend base URL (e.g., "http://backend.example.com")
     pub backend_base_url: Option<String>,
-    /// Node token for authentication
-    pub node_token: Option<String>,
-    /// API key for peer discovery (optional)
+    /// API key for authentication
     pub api_key: Option<String>,
     /// Region identifier (optional)
     pub region: Option<String>,
@@ -160,7 +158,6 @@ impl AppConfig {
                 .map(|s| s.parse().unwrap_or(false))
                 .unwrap_or(false),
             backend_base_url: env::var("BACKEND_BASE_URL").ok(),
-            node_token: env::var("NODE_TOKEN").ok(),
             api_key: env::var("API_KEY").ok(),
             region: env::var("REGION").ok(),
             peer_fetch_interval: env::var("PEER_FETCH_INTERVAL")
@@ -232,7 +229,6 @@ impl AppConfig {
             distributed: DistributedConfig {
                 enabled: false,
                 backend_base_url: None,
-                node_token: None,
                 api_key: None,
                 region: None,
                 peer_fetch_interval: 60,
