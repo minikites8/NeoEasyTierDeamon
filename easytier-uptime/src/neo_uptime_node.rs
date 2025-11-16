@@ -17,6 +17,7 @@ mod migrator;
 use anyhow::{Context, Result};
 use clap::Parser;
 use config::{AppConfig, DistributedConfig};
+use dashmap::DashMap;
 use db::Db;
 use easytier::utils::init_logger;
 use health_checker::HealthChecker;
@@ -32,6 +33,9 @@ use backend_client::{BackendClient, BackendPeer};
 use db::entity::shared_nodes;
 use db::operations::NodeOperations;
 use sea_orm::{ActiveModelTrait, IntoActiveModel, Set};
+
+/// Global mapping of local node ID to backend peer metadata
+type PeerMetadataMap = Arc<DashMap<i32, BackendPeer>>;
 
 #[global_allocator]
 static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
@@ -116,7 +120,6 @@ async fn main() -> Result<()> {
     let backend_client = Arc::new(
         BackendClient::new(
             args.backend_base_url.clone(),
-            None,
             Some(args.api_key.clone()),
         )
         .context("Failed to create backend client")?,
@@ -128,6 +131,9 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to connect to backend")?;
     info!("Backend connection successful");
+
+    // Create peer metadata map for tracking backend peer information
+    let peer_metadata: PeerMetadataMap = Arc::new(DashMap::new());
 
     // Build distributed config
     let distributed_config = DistributedConfig {
@@ -144,13 +150,16 @@ async fn main() -> Result<()> {
         backend_client.clone(),
         db.clone(),
         health_checker.clone(),
+        peer_metadata.clone(),
         distributed_config.clone(),
     );
 
     // Start status report task
     let status_report_handle = start_status_report_task(
         backend_client.clone(),
+        db.clone(),
         health_checker.clone(),
+        peer_metadata.clone(),
         distributed_config,
     );
 
@@ -176,6 +185,7 @@ fn start_peer_fetch_task(
     backend_client: Arc<BackendClient>,
     db: Db,
     health_checker: Arc<HealthChecker>,
+    peer_metadata: PeerMetadataMap,
     config: DistributedConfig,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -194,7 +204,7 @@ fn start_peer_fetch_task(
                     consecutive_failures = 0;
 
                     // Sync peers with local database
-                    if let Err(e) = sync_peers_to_db(&db, &health_checker, peers).await {
+                    if let Err(e) = sync_peers_to_db(&db, &health_checker, &peer_metadata, peers).await {
                         error!("Failed to sync peers to database: {}", e);
                     }
                 }
@@ -219,10 +229,12 @@ fn start_peer_fetch_task(
     })
 }
 
-/// Start periodic status reporting to backend
+/// Start periodic status reporting to backend (per-peer reporting)
 fn start_status_report_task(
     backend_client: Arc<BackendClient>,
+    db: Db,
     health_checker: Arc<HealthChecker>,
+    peer_metadata: PeerMetadataMap,
     config: DistributedConfig,
 ) -> tokio::task::JoinHandle<()> {
     let version = env!("CARGO_PKG_VERSION").to_string();
@@ -230,85 +242,169 @@ fn start_status_report_task(
 
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(config.status_report_interval));
-        let mut consecutive_failures = 0;
-        let max_failures = 5;
 
         loop {
             ticker.tick().await;
 
-            debug!("Collecting status information...");
+            debug!("Collecting and reporting peer statuses...");
 
-            // Collect status information
+            // Get all node statuses
             let all_statuses = health_checker.get_all_nodes_health_status();
-            let total_peers = all_statuses.len();
-            let healthy_peers = all_statuses
-                .iter()
-                .filter(|(_, status, _)| matches!(status, db::HealthStatus::Healthy))
-                .count();
+            
+            debug!("Found {} peers to report", all_statuses.len());
 
-            // Calculate average RTT (in milliseconds)
-            let (avg_rtt_ms, max_rtt_ms, reachable_peers) = calculate_rtt_statistics(&health_checker, &all_statuses);
+            // Report each peer individually (Mode A)
+            for (node_id, health_status, error_info) in all_statuses {
+                // Get RTT for this peer (in microseconds from health checker)
+                let rtt_us = health_checker
+                    .get_node_memory_record(node_id)
+                    .and_then(|r| r.get_last_response_time());
+                
+                // Convert RTT from microseconds to milliseconds
+                let response_time_ms = rtt_us.map(|us| us / 1000);
 
-            // Build metadata
-            let mut metadata = HashMap::new();
-            metadata.insert(
-                "version".to_string(),
-                serde_json::Value::String(version.clone()),
-            );
-            metadata.insert(
-                "peers_count".to_string(),
-                serde_json::Value::Number(total_peers.into()),
-            );
-            metadata.insert(
-                "reachable_peers".to_string(),
-                serde_json::Value::Number(reachable_peers.into()),
-            );
-            if let Some(r) = &region {
-                metadata.insert("region".to_string(), serde_json::Value::String(r.clone()));
-            }
-            if let Some(avg) = avg_rtt_ms {
+                // Determine status
+                let status = match health_status {
+                    db::HealthStatus::Healthy => "Online",
+                    _ => "Offline",
+                };
+
+                // Get node details from database to retrieve backend peer ID
+                let node_details = match NodeOperations::get_node_by_id(&db, node_id).await {
+                    Ok(Some(node)) => node,
+                    Ok(None) => {
+                        warn!("Node {} not found in database, skipping report", node_id);
+                        continue;
+                    }
+                    Err(e) => {
+                        error!("Failed to get node {} from database: {}", node_id, e);
+                        continue;
+                    }
+                };
+
+                // Extract backend peer ID from description
+                // Format: "Auto-added from backend (ID: 123)"
+                let backend_peer_id = if let Some(id_str) = node_details.description
+                    .strip_prefix("Auto-added from backend (ID: ")
+                    .and_then(|s| s.strip_suffix(")")) {
+                    match id_str.parse::<i32>() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            warn!("Failed to parse backend peer ID from description: {}", node_details.description);
+                            continue;
+                        }
+                    }
+                } else {
+                    warn!("Node {} does not have a valid backend peer ID in description: {}", 
+                          node_id, node_details.description);
+                    continue;
+                };
+
+                // Get peer metadata if available
+                let peer_meta = peer_metadata.get(&node_id);
+
+                // Build metadata
+                let mut metadata = HashMap::new();
                 metadata.insert(
-                    "avg_peer_rtt".to_string(),
-                    serde_json::Value::Number(avg.into()),
+                    "peer_name".to_string(),
+                    serde_json::Value::String(node_details.name.clone()),
                 );
-            }
-            if let Some(max) = max_rtt_ms {
                 metadata.insert(
-                    "max_peer_rtt".to_string(),
-                    serde_json::Value::Number(max.into()),
+                    "host".to_string(),
+                    serde_json::Value::String(node_details.host.clone()),
                 );
-            }
-
-            // Determine overall status
-            let status = "Online"; // Probe is always online if running
-
-            debug!(
-                "Reporting status: peers={}, reachable={}, avg_rtt={:?}ms",
-                total_peers, reachable_peers, avg_rtt_ms
-            );
-
-            // Report to backend
-            match backend_client
-                .report_status(status, avg_rtt_ms, Some(metadata))
-                .await
-            {
-                Ok(_) => {
-                    debug!("Successfully reported status to backend");
-                    consecutive_failures = 0;
-                }
-                Err(e) => {
-                    consecutive_failures += 1;
-                    error!(
-                        "Failed to report status to backend (attempt {}/{}): {}",
-                        consecutive_failures, max_failures, e
-                    );
-
-                    if consecutive_failures >= max_failures {
-                        warn!(
-                            "Failed to report status {} times consecutively, but continuing...",
-                            max_failures
+                metadata.insert(
+                    "port".to_string(),
+                    serde_json::Value::Number(node_details.port.into()),
+                );
+                metadata.insert(
+                    "protocol".to_string(),
+                    serde_json::Value::String(node_details.protocol.clone()),
+                );
+                
+                if let Some(ref peer) = peer_meta {
+                    if let Some(ref network_name) = peer.network_name {
+                        metadata.insert(
+                            "network_name".to_string(),
+                            serde_json::Value::String(network_name.clone()),
                         );
-                        consecutive_failures = 0;
+                    }
+                    if let Some(ref region_val) = peer.region {
+                        metadata.insert(
+                            "region".to_string(),
+                            serde_json::Value::String(region_val.clone()),
+                        );
+                    }
+                    if let Some(ref isp) = peer.isp {
+                        metadata.insert(
+                            "ISP".to_string(),
+                            serde_json::Value::String(isp.clone()),
+                        );
+                    }
+                }
+
+                // Add probe information
+                if let Some(ref probe_region) = region {
+                    metadata.insert(
+                        "probe_region".to_string(),
+                        serde_json::Value::String(probe_region.clone()),
+                    );
+                }
+                metadata.insert(
+                    "probe_version".to_string(),
+                    serde_json::Value::String(version.clone()),
+                );
+
+                if let Some(ref err) = error_info {
+                    metadata.insert(
+                        "error_message".to_string(),
+                        serde_json::Value::String(err.clone()),
+                    );
+                }
+
+                debug!(
+                    "Reporting peer {} (backend ID {}): status={}, rtt={:?}ms",
+                    node_details.name, backend_peer_id, status, response_time_ms
+                );
+
+                // Report to backend with retry logic
+                let mut retry_count = 0;
+                let max_retries = 3;
+                
+                loop {
+                    match backend_client
+                        .report_status(backend_peer_id, status, response_time_ms, Some(metadata.clone()))
+                        .await
+                    {
+                        Ok(_) => {
+                            debug!("Successfully reported status for peer {} (backend ID {})", 
+                                   node_details.name, backend_peer_id);
+                            break;
+                        }
+                        Err(e) => {
+                            retry_count += 1;
+                            if e.to_string().contains("401") || e.to_string().contains("Unauthorized") {
+                                error!("Authentication failed for peer {}: {}. Skipping retry.", 
+                                       node_details.name, e);
+                                break;
+                            }
+                            
+                            if retry_count >= max_retries {
+                                error!(
+                                    "Failed to report status for peer {} after {} attempts: {}",
+                                    node_details.name, max_retries, e
+                                );
+                                break;
+                            }
+                            
+                            warn!(
+                                "Failed to report status for peer {} (attempt {}/{}): {}. Retrying...",
+                                node_details.name, retry_count, max_retries, e
+                            );
+                            
+                            // Simple backoff
+                            tokio::time::sleep(Duration::from_secs(2_u64.pow(retry_count as u32))).await;
+                        }
                     }
                 }
             }
@@ -316,43 +412,11 @@ fn start_status_report_task(
     })
 }
 
-/// Calculate RTT statistics from health checker data
-/// Returns (avg_rtt_ms, max_rtt_ms, reachable_peers_count)
-fn calculate_rtt_statistics(
-    health_checker: &Arc<HealthChecker>,
-    all_statuses: &[(i32, db::HealthStatus, Option<String>)],
-) -> (Option<i32>, Option<i32>, usize) {
-    let rtt_values: Vec<i32> = all_statuses
-        .iter()
-        .filter(|(_, status, _)| matches!(status, db::HealthStatus::Healthy))
-        .filter_map(|(node_id, _, _)| {
-            health_checker
-                .get_node_memory_record(*node_id)
-                .and_then(|r| r.get_last_response_time())
-        })
-        .collect();
-
-    let reachable_peers = rtt_values.len();
-
-    if rtt_values.is_empty() {
-        return (None, None, 0);
-    }
-
-    // Note: The RTT values from health_checker are already in microseconds
-    // We need to convert them to milliseconds by dividing by 1000
-    let rtt_ms_values: Vec<i32> = rtt_values.iter().map(|&rtt_us| rtt_us / 1000).collect();
-
-    let sum: i32 = rtt_ms_values.iter().sum();
-    let avg_rtt_ms = sum / rtt_ms_values.len() as i32;
-    let max_rtt_ms = *rtt_ms_values.iter().max().unwrap_or(&0);
-
-    (Some(avg_rtt_ms), Some(max_rtt_ms), reachable_peers)
-}
-
 /// Sync fetched peers to local database and health checker
 async fn sync_peers_to_db(
     db: &Db,
     health_checker: &Arc<HealthChecker>,
+    peer_metadata: &PeerMetadataMap,
     backend_peers: Vec<BackendPeer>,
 ) -> Result<()> {
     // Get current nodes from database
@@ -373,8 +437,21 @@ async fn sync_peers_to_db(
         synced_keys.insert(key.clone());
 
         if let Some(existing_node) = current_node_map.get(&key) {
-            // Node already exists - we keep it as-is
-            debug!("Peer already exists: {}", backend_peer.name);
+            // Node already exists - store/update peer metadata
+            peer_metadata.insert(existing_node.id, backend_peer.clone());
+            
+            // Update description to include backend ID if needed
+            let expected_desc = format!("Auto-added from backend (ID: {})", backend_peer.id);
+            if existing_node.description != expected_desc {
+                debug!("Updating peer description: {}", backend_peer.name);
+                if let Ok(Some(node)) = NodeOperations::get_node_by_id(db, existing_node.id).await {
+                    let mut active_model = node.into_active_model();
+                    active_model.description = Set(expected_desc);
+                    if let Err(e) = active_model.update(db.orm_db()).await {
+                        warn!("Failed to update node description: {}", e);
+                    }
+                }
+            }
         } else {
             // New node, add to database
             info!("Adding new peer from backend: {}", backend_peer.name);
@@ -393,7 +470,7 @@ async fn sync_peers_to_db(
                 )),
                 max_connections: 100,
                 allow_relay: true,
-                network_name: backend_peer.network_name.clone(),
+                network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
                 network_secret: Some(String::new()), // Empty for distributed mode
                 qq_number: None,
                 wechat: None,
@@ -403,13 +480,15 @@ async fn sync_peers_to_db(
             match NodeOperations::create_node(db, create_req).await {
                 Ok(node) => {
                     // Auto-approve nodes from backend
-                    let mut active_model = node.into_active_model();
+                    let mut active_model = node.clone().into_active_model();
                     active_model.is_approved = Set(true);
 
                     if let Err(e) = active_model.update(db.orm_db()).await {
                         warn!("Failed to approve new node: {}", e);
                     } else {
                         info!("Successfully added and approved peer: {}", backend_peer.name);
+                        // Store peer metadata with the new node ID
+                        peer_metadata.insert(node.id, backend_peer.clone());
                     }
                 }
                 Err(e) => {

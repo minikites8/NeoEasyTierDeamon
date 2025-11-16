@@ -20,9 +20,13 @@ pub struct BackendPeer {
     pub host: String,
     pub port: i32,
     pub protocol: String,
-    pub network_name: String,
+    #[serde(default)]
+    pub network_name: Option<String>,
     pub status: String,
     pub response_time: Option<i32>,
+    pub region: Option<String>,
+    #[serde(rename = "ISP")]
+    pub isp: Option<String>,
 }
 
 /// Response from GET /peers endpoint
@@ -43,6 +47,7 @@ pub struct PeersData {
 /// Request body for PUT /nodes/status endpoint
 #[derive(Debug, Serialize)]
 pub struct NodeStatusRequest {
+    pub id: i32,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_time: Option<i32>,
@@ -62,7 +67,6 @@ impl BackendClient {
     /// Create a new backend client
     pub fn new(
         base_url: String,
-        _node_token: Option<String>, // For backward compatibility only
         api_key: Option<String>,
     ) -> Result<Self> {
         let client = Client::builder()
@@ -136,15 +140,17 @@ impl BackendClient {
     /// Report node status to backend
     pub async fn report_status(
         &self,
+        id: i32,
         status: &str,
         response_time: Option<i32>,
         metadata: Option<HashMap<String, serde_json::Value>>,
     ) -> Result<()> {
         let url = format!("{}/nodes/status", self.base_url);
 
-        debug!("Reporting status to backend: {}", url);
+        debug!("Reporting status to backend: {} for peer id={}", url, id);
 
         let request_body = NodeStatusRequest {
+            id,
             status: status.to_string(),
             response_time,
             metadata,
@@ -199,7 +205,7 @@ impl BackendClient {
         let mut request = self.client.get(&url);
 
         if let Some(api_key) = &self.api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
+            request = request.header("x-api-key", api_key);
         }
 
         let response = request
@@ -224,7 +230,6 @@ mod tests {
     fn test_backend_client_creation() {
         let client = BackendClient::new(
             "http://localhost:8080".to_string(),
-            Some("test-token".to_string()),
             Some("test-api-key".to_string()),
         );
         assert!(client.is_ok());
