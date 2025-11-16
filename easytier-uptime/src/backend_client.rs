@@ -236,4 +236,47 @@ mod tests {
         );
         assert!(client.is_ok());
     }
+
+    #[test]
+    fn test_backend_peer_deserialization_with_network_secret() {
+        // Test that network_secret is properly deserialized
+        let json = r#"{
+            "id": 1,
+            "name": "test-peer",
+            "host": "192.168.1.1",
+            "port": 11010,
+            "protocol": "tcp",
+            "network_name": "test-network",
+            "network_secret": "secret123",
+            "status": "Online",
+            "response_time": 50,
+            "region": "us-west",
+            "ISP": "TestISP"
+        }"#;
+        
+        let peer: Result<BackendPeer, _> = serde_json::from_str(json);
+        assert!(peer.is_ok());
+        let peer = peer.unwrap();
+        assert_eq!(peer.network_secret, Some("secret123".to_string()));
+    }
+
+    #[test]
+    fn test_backend_peer_deserialization_without_network_secret() {
+        // Test that network_secret defaults to None when not provided
+        let json = r#"{
+            "id": 1,
+            "name": "test-peer",
+            "host": "192.168.1.1",
+            "port": 11010,
+            "protocol": "tcp",
+            "status": "Online",
+            "response_time": 50
+        }"#;
+        
+        let peer: Result<BackendPeer, _> = serde_json::from_str(json);
+        assert!(peer.is_ok());
+        let peer = peer.unwrap();
+        assert_eq!(peer.network_secret, None);
+        assert_eq!(peer.network_name, None);
+    }
 }
