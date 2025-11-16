@@ -22,6 +22,8 @@ pub struct BackendPeer {
     pub protocol: String,
     #[serde(default)]
     pub network_name: Option<String>,
+    #[serde(default)]
+    pub network_secret: Option<String>,
     pub status: String,
     pub response_time: Option<i32>,
     pub region: Option<String>,

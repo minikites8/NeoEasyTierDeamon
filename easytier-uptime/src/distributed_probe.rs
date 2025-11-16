@@ -251,15 +251,35 @@ impl DistributedProbe {
             synced_keys.insert(key.clone());
 
             if let Some(existing_node) = current_node_map.get(&key) {
-                // Node already exists, check if update needed
-                if existing_node.name != backend_peer.name
+                // Node already exists
+                // Check if network_secret or other fields need to be updated
+                let backend_secret = backend_peer.network_secret.clone().unwrap_or_else(|| String::new());
+                let backend_network_name = backend_peer.network_name.clone().unwrap_or_else(|| String::from("default"));
+                
+                let needs_update = existing_node.name != backend_peer.name
                     || existing_node.protocol != backend_peer.protocol
-                    || existing_node.network_name != backend_peer.network_name.clone().unwrap_or_else(|| String::from("default"))
-                {
+                    || existing_node.network_name != backend_network_name
+                    || existing_node.network_secret != backend_secret;
+                
+                if needs_update {
                     debug!("Updating existing node: {}", backend_peer.name);
-                    // Update node if needed
-                    // Note: For simplicity, we keep the existing node as-is in this implementation
-                    // In a production system, you might want to update specific fields
+                    if let Ok(Some(node)) = NodeOperations::get_node_by_id(db, existing_node.id).await {
+                        let mut active_model = node.into_active_model();
+                        active_model.name = Set(backend_peer.name.clone());
+                        active_model.protocol = Set(backend_peer.protocol.clone());
+                        active_model.network_name = Set(backend_network_name);
+                        active_model.network_secret = Set(backend_secret);
+                        
+                        if let Err(e) = active_model.update(db.orm_db()).await {
+                            warn!("Failed to update node: {}", e);
+                        } else {
+                            // Trigger health checker to reload configuration for this node
+                            info!("Node configuration updated for {}, triggering reload", backend_peer.name);
+                            if let Err(e) = health_checker.try_update_node(existing_node.id).await {
+                                error!("Failed to reload health checker for node {}: {}", existing_node.id, e);
+                            }
+                        }
+                    }
                 }
             } else {
                 // New node, add to database
@@ -275,7 +295,7 @@ impl DistributedProbe {
                     max_connections: 100,
                     allow_relay: true,
                     network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
-                    network_secret: Some(String::new()), // Empty for distributed mode
+                    network_secret: backend_peer.network_secret.clone(),
                     qq_number: None,
                     wechat: None,
                     mail: None,
