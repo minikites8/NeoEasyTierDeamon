@@ -309,16 +309,15 @@ cargo build --bin neo-uptime-node --release
 | 环境变量 | 命令行参数 | 说明 | 示例 |
 |---------|-----------|------|------|
 | `BACKEND_BASE_URL` | `--backend-base-url` | 后端 API 基础地址 | `https://backend.example.com` |
-| `NODE_TOKEN` | `--node-token` | 节点认证 Token（用于 `x-node-token` 请求头） | `your-secret-token` |
+| `API_KEY` | `--api-key` | API Key（用于所有请求的 `x-api-key` 请求头） | `your-api-key` |
 
 #### 可选配置
 
 | 环境变量 | 命令行参数 | 默认值 | 说明 |
 |---------|-----------|--------|------|
-| `API_KEY` | `--api-key` | 无 | API Key（用于 `Authorization: Bearer` 请求头） |
-| `REGION` | `--region` | 无 | 区域标识符，用于过滤和标识节点 |
+| `REGION` | `--region` | 无 | 区域标识符，用于标识探测节点所在区域 |
 | `PEER_FETCH_INTERVAL` | `--peer-fetch-interval` | `60` | 获取 peer 列表的间隔（秒） |
-| `STATUS_REPORT_INTERVAL` | `--status-report-interval` | `30` | 上报状态的间隔（秒） |
+| `STATUS_REPORT_INTERVAL` | `--status-report-interval` | `30` | 上报每个 peer 状态的间隔（秒） |
 | `HEALTH_CHECK_INTERVAL` | `--health-check-interval` | `5` | 每个 peer 的健康检查间隔（秒） |
 | `DATABASE_PATH` | `--database-path` | `neo-uptime-node.db` | 本地缓存数据库路径 |
 
@@ -329,8 +328,7 @@ cargo build --bin neo-uptime-node --release
 ```bash
 # 设置环境变量
 export BACKEND_BASE_URL="https://backend.example.com"
-export NODE_TOKEN="your-node-token"
-export API_KEY="optional-api-key"
+export API_KEY="your-api-key"
 export REGION="cn-hz"
 
 # 运行
@@ -342,8 +340,7 @@ export REGION="cn-hz"
 ```bash
 ./target/release/neo-uptime-node \
   --backend-base-url "https://backend.example.com" \
-  --node-token "your-node-token" \
-  --api-key "optional-api-key" \
+  --api-key "your-api-key" \
   --region "cn-hz" \
   --peer-fetch-interval 60 \
   --status-report-interval 30
@@ -355,8 +352,7 @@ export REGION="cn-hz"
 # 创建 .env 文件
 cat > .env << EOF
 BACKEND_BASE_URL=https://backend.example.com
-NODE_TOKEN=your-node-token
-API_KEY=optional-api-key
+API_KEY=your-api-key
 REGION=cn-hz
 PEER_FETCH_INTERVAL=60
 STATUS_REPORT_INTERVAL=30
@@ -390,7 +386,7 @@ docker run -d \
   --name neo-uptime-node \
   --restart unless-stopped \
   -e BACKEND_BASE_URL="https://backend.example.com" \
-  -e NODE_TOKEN="your-node-token" \
+  -e API_KEY="your-api-key" \
   -e REGION="cn-hz" \
   neo-uptime-node:latest
 ```
@@ -406,7 +402,7 @@ docker run -d \
 **请求示例：**
 ```
 GET /peers?region=cn-hz
-Authorization: Bearer {API_KEY}
+x-api-key: {API_KEY}
 ```
 
 **响应示例：**
@@ -417,58 +413,69 @@ Authorization: Bearer {API_KEY}
   "data": {
     "peers": [
       {
-        "id": 1,
+        "id": 2,
         "name": "节点1",
-        "host": "192.168.1.100",
-        "port": 25565,
-        "protocol": "http",
-        "network_name": "main",
+        "host": "221.7.223.136",
+        "port": 11010,
+        "protocol": "tcp",
+        "network_name": null,
         "status": "Online",
-        "response_time": 50
+        "response_time": 100,
+        "region": "China",
+        "ISP": "CHINA UNICOM China169 Backbone"
       }
     ],
-    "total_available": 100,
-    "next_batch_available": true
+    "total_available": 1,
+    "next_batch_available": false
   }
 }
 ```
 
-#### 2. PUT /nodes/status - 上报节点状态
+#### 2. PUT /nodes/status - 上报远程节点状态
 
-用于探测节点向后端报告自身状态和探测结果。
+用于探测节点向后端报告**每个远程 easytier 节点**的探测结果（按 peer 维度逐个上报）。
 
 **请求示例：**
 ```
 PUT /nodes/status
-x-node-token: {NODE_TOKEN}
+x-api-key: {API_KEY}
 Content-Type: application/json
 
 {
+  "id": 2,
   "status": "Online",
-  "response_time": 50,
+  "response_time": 37,
   "metadata": {
-    "version": "0.1.0",
-    "region": "cn-hz",
-    "peers_count": 10,
-    "reachable_peers": 8,
-    "avg_peer_rtt": 45,
-    "max_peer_rtt": 120
+    "peer_name": "节点1",
+    "host": "221.7.223.136",
+    "port": 11010,
+    "protocol": "tcp",
+    "network_name": null,
+    "region": "China",
+    "ISP": "CHINA UNICOM China169 Backbone",
+    "probe_region": "cn-hz",
+    "probe_version": "0.1.0"
   }
 }
 ```
 
 **字段说明：**
-- `status`（必填）：探测节点状态，支持 `Online` / `Offline`
-- `response_time`（可选）：**本探测节点到所有 peers 的平均延迟（毫秒）**
-  - 计算方式：对所有成功探测的 peers 的 RTT 求平均值
+- `id`（必填）：远程 easytier 节点的 ID（整数，来自 `/peers` 返回的 `peers[*].id`）
+- `status`（必填）：该远程节点的探测结果，支持 `Online` / `Offline`
+- `response_time`（可选）：**本探测节点到该远程节点的 RTT 延迟（毫秒）**
   - 类型：整数（毫秒）
+  - 仅当探测成功时提供
 - `metadata`（可选）：额外信息
-  - `version`: 探测节点版本号
-  - `region`: 节点所在区域
-  - `peers_count`: 本轮获取到的 peers 数量
-  - `reachable_peers`: 本轮成功探测的 peers 数量
-  - `avg_peer_rtt`: 平均 RTT（毫秒）
-  - `max_peer_rtt`: 最大 RTT（毫秒）
+  - `peer_name`: 远程节点名称
+  - `host`: 远程节点主机地址
+  - `port`: 远程节点端口
+  - `protocol`: 远程节点协议
+  - `network_name`: 远程节点网络名（可选）
+  - `region`: 远程节点所在区域（可选）
+  - `ISP`: 远程节点 ISP 信息（可选）
+  - `probe_region`: 探测节点所在区域
+  - `probe_version`: 探测节点版本号
+  - `error_message`: 探测失败时的错误信息（可选）
 
 **响应示例：**
 ```json
@@ -490,12 +497,14 @@ Content-Type: application/json
    - **Peer 获取任务**（默认每 60 秒）：
      - 调用 `GET /peers` 获取 peer 列表
      - 将新的 peers 同步到本地数据库
+     - 存储 backend peer ID 到 description 字段以便后续查找
      - 自动批准并开始监控新 peers
    
    - **状态上报任务**（默认每 30 秒）：
-     - 收集所有 peers 的健康状态
-     - 计算平均 RTT 和最大 RTT（单位：毫秒）
-     - 调用 `PUT /nodes/status` 上报状态
+     - 遍历所有被监控的 peers
+     - 对每个 peer，获取其最新探测结果和 RTT
+     - 逐个调用 `PUT /nodes/status` 上报每个 peer 的状态（Mode A）
+     - 包含 peer 的完整信息和探测结果
 
 3. **健康检查**（每个 peer 默认每 5 秒）：
    - 使用 EasyTier 原生探测逻辑
@@ -512,6 +521,7 @@ Content-Type: application/json
 - `neo-uptime-node` 自动将其转换为 **毫秒（ms）** 再上报
 - `response_time` 字段保证为整数毫秒值
 - 转换公式：`RTT_ms = RTT_us / 1000`
+- 每个 peer 的 RTT 独立计算和上报
 
 ### 多节点部署
 

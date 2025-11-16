@@ -37,7 +37,6 @@ impl DistributedProbe {
 
         let backend_client = Arc::new(BackendClient::new(
             backend_url,
-            None,
             config.api_key.clone(),
         )?);
 
@@ -211,8 +210,10 @@ impl DistributedProbe {
                     "Online" // Probe is working regardless of peer health
                 };
 
+                // Report with ID 0 to represent the probe node itself (not a specific peer)
+                // TODO: This may need to be updated based on backend API requirements
                 match backend_client
-                    .report_status(status, avg_response_time, Some(metadata))
+                    .report_status(0, status, avg_response_time, Some(metadata))
                     .await
                 {
                     Ok(_) => {
@@ -253,7 +254,7 @@ impl DistributedProbe {
                 // Node already exists, check if update needed
                 if existing_node.name != backend_peer.name
                     || existing_node.protocol != backend_peer.protocol
-                    || existing_node.network_name != backend_peer.network_name
+                    || existing_node.network_name != backend_peer.network_name.clone().unwrap_or_else(|| String::from("default"))
                 {
                     debug!("Updating existing node: {}", backend_peer.name);
                     // Update node if needed
@@ -273,7 +274,7 @@ impl DistributedProbe {
                     description: Some(format!("Auto-added from backend (ID: {})", backend_peer.id)),
                     max_connections: 100,
                     allow_relay: true,
-                    network_name: backend_peer.network_name.clone(),
+                    network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
                     network_secret: Some(String::new()), // Empty for distributed mode
                     qq_number: None,
                     wechat: None,
