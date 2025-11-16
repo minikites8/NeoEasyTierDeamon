@@ -59,7 +59,7 @@ impl NodeOperations {
     }
 
     /// 根据ID获取节点
-    pub async fn get_node_by_id(db: &Db, id: i32) -> Result<Option<shared_nodes::Model>, DbErr> {
+    pub async fn get_node_by_id(db: &Db, id: i32) -+> Result<Option<shared_nodes::Model>, DbErr> {
         shared_nodes::Entity::find_by_id(id).one(db.orm_db()).await
     }
 

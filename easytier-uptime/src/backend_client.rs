@@ -9,7 +9,6 @@ use tracing::{debug, error, info, warn};
 pub struct BackendClient {
     client: Client,
     base_url: String,
-    node_token: Option<String>,
     api_key: Option<String>,
 }
 
@@ -63,7 +62,7 @@ impl BackendClient {
     /// Create a new backend client
     pub fn new(
         base_url: String,
-        node_token: Option<String>,
+        _node_token: Option<String>, // For backward compatibility only
         api_key: Option<String>,
     ) -> Result<Self> {
         let client = Client::builder()
@@ -74,7 +73,6 @@ impl BackendClient {
         Ok(Self {
             client,
             base_url,
-            node_token,
             api_key,
         })
     }
@@ -91,8 +89,11 @@ impl BackendClient {
         let mut request = self.client.get(&url);
 
         // Add API key if available
+        request = request.header("user-agent", "easytier-uptime");
+
+        // Add API key if available
         if let Some(api_key) = &self.api_key {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
+            request = request.header("x-api-key", api_key);
         }
 
         let response = request
@@ -150,10 +151,12 @@ impl BackendClient {
         };
 
         let mut request = self.client.put(&url).json(&request_body);
+        
+        request = request.header("user-agent", "easytier-uptime");
 
-        // Add node token if available
-        if let Some(token) = &self.node_token {
-            request = request.header("x-node-token", token);
+        // Add API key if available
+        if let Some(api_key) = &self.api_key {
+            request = request.header("x-api-key", api_key);
         }
 
         let response = request

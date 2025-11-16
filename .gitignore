@@ -31,7 +31,6 @@ musl_gcc
 
 # log
 easytier-panic.log
-easytier-uptime.log
 
 # web
 node_modules

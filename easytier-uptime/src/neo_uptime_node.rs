@@ -49,13 +49,9 @@ struct Args {
     #[arg(long, env = "BACKEND_BASE_URL", required = true)]
     backend_base_url: String,
 
-    /// Node token for authentication with backend
-    #[arg(long, env = "NODE_TOKEN", required = true)]
-    node_token: String,
-
-    /// API key for peer discovery (optional)
-    #[arg(long, env = "API_KEY")]
-    api_key: Option<String>,
+    /// API key for authentication with backend
+    #[arg(long, env = "API_KEY", required = true)]
+    api_key: String,
 
     /// Region identifier (optional)
     #[arg(long, env = "REGION")]
@@ -120,8 +116,8 @@ async fn main() -> Result<()> {
     let backend_client = Arc::new(
         BackendClient::new(
             args.backend_base_url.clone(),
-            Some(args.node_token.clone()),
-            args.api_key.clone(),
+            None,
+            Some(args.api_key.clone()),
         )
         .context("Failed to create backend client")?,
     );
@@ -137,8 +133,7 @@ async fn main() -> Result<()> {
     let distributed_config = DistributedConfig {
         enabled: true,
         backend_base_url: Some(args.backend_base_url),
-        node_token: Some(args.node_token),
-        api_key: args.api_key,
+        api_key: Some(args.api_key),
         region: args.region.clone(),
         peer_fetch_interval: args.peer_fetch_interval,
         status_report_interval: args.status_report_interval,

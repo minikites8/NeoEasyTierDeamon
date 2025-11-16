@@ -37,7 +37,7 @@ impl DistributedProbe {
 
         let backend_client = Arc::new(BackendClient::new(
             backend_url,
-            config.node_token.clone(),
+            None,
             config.api_key.clone(),
         )?);
 
