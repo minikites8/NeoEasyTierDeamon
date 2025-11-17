@@ -440,15 +440,33 @@ async fn sync_peers_to_db(
             // Node already exists - store/update peer metadata
             peer_metadata.insert(existing_node.id, backend_peer.clone());
             
+            // Check if network_secret needs to be updated
+            let backend_secret = backend_peer.network_secret.clone().unwrap_or_else(|| String::new());
+            let needs_update = existing_node.network_secret != backend_secret;
+            
             // Update description to include backend ID if needed
             let expected_desc = format!("Auto-added from backend (ID: {})", backend_peer.id);
-            if existing_node.description != expected_desc {
-                debug!("Updating peer description: {}", backend_peer.name);
+            let desc_needs_update = existing_node.description != expected_desc;
+            
+            if needs_update || desc_needs_update {
+                debug!("Updating peer {}: network_secret={}, description={}", 
+                       backend_peer.name, needs_update, desc_needs_update);
                 if let Ok(Some(node)) = NodeOperations::get_node_by_id(db, existing_node.id).await {
                     let mut active_model = node.into_active_model();
-                    active_model.description = Set(expected_desc);
+                    if needs_update {
+                        active_model.network_secret = Set(backend_secret);
+                    }
+                    if desc_needs_update {
+                        active_model.description = Set(expected_desc);
+                    }
                     if let Err(e) = active_model.update(db.orm_db()).await {
-                        warn!("Failed to update node description: {}", e);
+                        warn!("Failed to update node: {}", e);
+                    } else if needs_update {
+                        // Trigger health checker to reload configuration for this node
+                        info!("Network secret updated for node {}, triggering reload", backend_peer.name);
+                        if let Err(e) = health_checker.try_update_node(existing_node.id).await {
+                            error!("Failed to reload health checker for node {}: {}", existing_node.id, e);
+                        }
                     }
                 }
             }
@@ -471,7 +489,7 @@ async fn sync_peers_to_db(
                 max_connections: 100,
                 allow_relay: true,
                 network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
-                network_secret: Some(String::new()), // Empty for distributed mode
+                network_secret: backend_peer.network_secret.clone(),
                 qq_number: None,
                 wechat: None,
                 mail: None,

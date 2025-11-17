@@ -81,8 +81,11 @@ impl HealthCheckerManager {
                 }
                 current_nodes_guard.insert(node_id);
                 info!("Added new node {} to health monitoring", node_id);
+                
+                // Add a short delay after adding a new node to allow network instance to initialize
+                tokio::time::sleep(Duration::from_secs(2)).await;
             } else if let Err(e) = health_checker.try_update_node(node_id).await {
-                error!("Failed to add node {} to health checker: {}", node_id, e);
+                error!("Failed to update node {} in health checker: {}", node_id, e);
             }
         }
 

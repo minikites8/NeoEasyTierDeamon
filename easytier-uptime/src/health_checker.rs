@@ -28,11 +28,14 @@ pub struct HealthCheckOneNode {
     node_id: String,
 }
 
-const HEALTH_CHECK_RING_GRANULARITY_SEC: usize = 60 * 15; // 15分钟
-const HEALTH_CHECK_RING_MAX_DURATION_SEC: usize = 60 * 60 * 24; // 最多一天
+// Health check configuration constants
+const HEALTH_CHECK_RING_GRANULARITY_SEC: usize = 60 * 15; // 15 minutes
+const HEALTH_CHECK_RING_MAX_DURATION_SEC: usize = 60 * 60 * 24; // 24 hours max
 
-// const HEALTH_CHECK_RING_GRANULARITY_SEC: usize = 10;
-// const HEALTH_CHECK_RING_MAX_DURATION_SEC: usize = 60;
+// Connection initialization retry configuration
+const CONNECTION_INIT_MAX_WAIT_SECS: u64 = 30; // Maximum time to wait for connection
+const CONNECTION_INIT_RETRY_INTERVAL_MS: u64 = 500; // Check every 500ms
+const CONNECTION_INIT_RETRY_COUNT: u32 = CONNECTION_INIT_MAX_WAIT_SECS as u32 * 1000 / CONNECTION_INIT_RETRY_INTERVAL_MS as u32;
 
 const HEALTH_CHECK_RING_SIZE: usize =
     HEALTH_CHECK_RING_MAX_DURATION_SEC / HEALTH_CHECK_RING_GRANULARITY_SEC;
@@ -392,26 +395,44 @@ impl HealthChecker {
         });
         self.instance_mgr
             .run_network_instance(cfg.clone(), false, ConfigFileControl::STATIC_CONFIG)
-            .with_context(|| "failed to run network instance")?;
+            .with_context(|| "Failed to run network instance for connection test")?;
 
         let now = Instant::now();
-        let mut err = None;
+        let mut last_err = None;
+        let mut retry_count = 0;
+        
         while now.elapsed() < max_time {
             match Self::test_node_healthy(cfg.get_id(), self.instance_mgr.clone()).await {
                 Ok(_) => {
+                    info!(
+                        "Connection test successful for node {} after {} retries and {:?}",
+                        node_info.name,
+                        retry_count,
+                        now.elapsed()
+                    );
                     return Ok(());
                 }
                 Err(e) => {
-                    warn!(
-                        "test node healthy failed, node_info: {:?}, err: {}",
-                        node_info, e
-                    );
-                    err = Some(e);
+                    retry_count += 1;
+                    if retry_count % 10 == 0 {
+                        debug!(
+                            "Connection test attempt {} for node {}: {}",
+                            retry_count, node_info.name, e
+                        );
+                    }
+                    last_err = Some(e);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(CONNECTION_INIT_RETRY_INTERVAL_MS)).await;
         }
-        Err(anyhow::anyhow!("test node healthy failed, err: {:?}", err))
+        
+        Err(anyhow::anyhow!(
+            "Connection test failed for node {} after {:?} ({} retries): {:?}",
+            node_info.name,
+            max_time,
+            retry_count,
+            last_err
+        ))
     }
 
     async fn get_node_cfg(
@@ -497,17 +518,17 @@ impl HealthChecker {
         // return version, response time on healthy, conn_count
     ) -> anyhow::Result<(String, u64, u32)> {
         let Some(instance) = instance_mgr.get_network_info(&inst_id).await else {
-            anyhow::bail!("healthy check node is not started");
+            anyhow::bail!("Health check node instance not found (inst_id: {})", inst_id);
         };
 
         let running = instance.running;
         // health check node is not running, update db
         if !running {
-            anyhow::bail!("healthy check node is not running");
+            anyhow::bail!("Health check node is not running (inst_id: {})", inst_id);
         }
 
         if let Some(err) = instance.error_msg {
-            anyhow::bail!("healthy check node has error: {}", err);
+            anyhow::bail!("Health check node has error (inst_id: {}): {}", inst_id, err);
         }
 
         let p = instance.peer_route_pairs;
@@ -518,15 +539,19 @@ impl HealthChecker {
                 !route.feature_flag.unwrap().is_public_server && route.hostname != "HealthCheckNode"
             }) && x.peer.as_ref().is_some_and(|p| !p.conns.is_empty())
         }) else {
-            anyhow::bail!("dst node is not online");
+            anyhow::bail!(
+                "Destination node not online (inst_id: {}, peer_count: {}, check network_secret and connectivity)",
+                inst_id,
+                p.len()
+            );
         };
 
         let Some(route_info) = &dst_node.route else {
-            anyhow::bail!("dst node route is not found");
+            anyhow::bail!("Destination node route not found (inst_id: {})", inst_id);
         };
 
         let Some(peer_info) = &dst_node.peer else {
-            anyhow::bail!("dst node peer is not found");
+            anyhow::bail!("Destination node peer info not found (inst_id: {})", inst_id);
         };
 
         let version = route_info
