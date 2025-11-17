@@ -261,12 +261,12 @@ fn start_status_report_task(
                     .and_then(|r| r.get_last_response_time());
                 
                 // Convert RTT from microseconds to milliseconds
-                let response_time_ms = rtt_us.map(|us| us / 1000);
+                let latency_ms = rtt_us.map(|us| (us / 1000) as i32).unwrap_or(0);
 
                 // Determine status
                 let status = match health_status {
-                    db::HealthStatus::Healthy => "Online",
-                    _ => "Offline",
+                    db::HealthStatus::Healthy => "online",
+                    _ => "offline",
                 };
 
                 // Get node details from database to retrieve backend peer ID
@@ -300,71 +300,15 @@ fn start_status_report_task(
                     continue;
                 };
 
-                // Get peer metadata if available
-                let peer_meta = peer_metadata.get(&node_id);
-
-                // Build metadata
-                let mut metadata = HashMap::new();
-                metadata.insert(
-                    "peer_name".to_string(),
-                    serde_json::Value::String(node_details.name.clone()),
-                );
-                metadata.insert(
-                    "host".to_string(),
-                    serde_json::Value::String(node_details.host.clone()),
-                );
-                metadata.insert(
-                    "port".to_string(),
-                    serde_json::Value::Number(node_details.port.into()),
-                );
-                metadata.insert(
-                    "protocol".to_string(),
-                    serde_json::Value::String(node_details.protocol.clone()),
-                );
-                
-                if let Some(ref peer) = peer_meta {
-                    if let Some(ref network_name) = peer.network_name {
-                        metadata.insert(
-                            "network_name".to_string(),
-                            serde_json::Value::String(network_name.clone()),
-                        );
-                    }
-                    if let Some(ref region_val) = peer.region {
-                        metadata.insert(
-                            "region".to_string(),
-                            serde_json::Value::String(region_val.clone()),
-                        );
-                    }
-                    if let Some(ref isp) = peer.isp {
-                        metadata.insert(
-                            "ISP".to_string(),
-                            serde_json::Value::String(isp.clone()),
-                        );
-                    }
-                }
-
-                // Add probe information
-                if let Some(ref probe_region) = region {
-                    metadata.insert(
-                        "probe_region".to_string(),
-                        serde_json::Value::String(probe_region.clone()),
-                    );
-                }
-                metadata.insert(
-                    "probe_version".to_string(),
-                    serde_json::Value::String(version.clone()),
-                );
-
-                if let Some(ref err) = error_info {
-                    metadata.insert(
-                        "error_message".to_string(),
-                        serde_json::Value::String(err.clone()),
-                    );
-                }
+                // Get peer count from metadata or use 0 as default
+                // In a real scenario, this would come from the actual peer connection count
+                let peer_count = peer_metadata.get(&node_id)
+                    .and_then(|p| p.peer)
+                    .unwrap_or(0);
 
                 debug!(
-                    "Reporting peer {} (backend ID {}): status={}, rtt={:?}ms",
-                    node_details.name, backend_peer_id, status, response_time_ms
+                    "Reporting peer {} (backend ID {}): status={}, latency={}ms, peer_count={}",
+                    node_details.name, backend_peer_id, status, latency_ms, peer_count
                 );
 
                 // Report to backend with retry logic
@@ -373,11 +317,11 @@ fn start_status_report_task(
                 
                 loop {
                     match backend_client
-                        .report_status(backend_peer_id, status, response_time_ms, Some(metadata.clone()))
+                        .report_status(backend_peer_id, status, latency_ms, peer_count)
                         .await
                     {
                         Ok(_) => {
-                            debug!("Successfully reported status for peer {} (backend ID {})", 
+                            debug!("Successfully reported heartbeat for peer {} (backend ID {})", 
                                    node_details.name, backend_peer_id);
                             break;
                         }
@@ -391,14 +335,14 @@ fn start_status_report_task(
                             
                             if retry_count >= max_retries {
                                 error!(
-                                    "Failed to report status for peer {} after {} attempts: {}",
+                                    "Failed to report heartbeat for peer {} after {} attempts: {}",
                                     node_details.name, max_retries, e
                                 );
                                 break;
                             }
                             
                             warn!(
-                                "Failed to report status for peer {} (attempt {}/{}): {}. Retrying...",
+                                "Failed to report heartbeat for peer {} (attempt {}/{}): {}. Retrying...",
                                 node_details.name, retry_count, max_retries, e
                             );
                             
@@ -424,19 +368,22 @@ async fn sync_peers_to_db(
         .await
         .context("Failed to get current nodes")?;
 
-    let current_node_map: HashMap<String, shared_nodes::Model> = current_nodes
-        .into_iter()
-        .map(|n| (format!("{}:{}", n.host, n.port), n))
-        .collect();
-
-    let mut synced_keys = std::collections::HashSet::new();
+    // Create a map keyed by backend node ID for easier lookup
+    let mut current_node_map: HashMap<i32, shared_nodes::Model> = HashMap::new();
+    for node in current_nodes {
+        // Extract backend peer ID from description
+        if let Some(id_str) = node.description
+            .strip_prefix("Auto-added from backend (ID: ")
+            .and_then(|s| s.strip_suffix(")")) {
+            if let Ok(backend_id) = id_str.parse::<i32>() {
+                current_node_map.insert(backend_id, node);
+            }
+        }
+    }
 
     // Add or update peers from backend
     for backend_peer in backend_peers {
-        let key = format!("{}:{}", backend_peer.host, backend_peer.port);
-        synced_keys.insert(key.clone());
-
-        if let Some(existing_node) = current_node_map.get(&key) {
+        if let Some(existing_node) = current_node_map.get(&backend_peer.id) {
             // Node already exists - store/update peer metadata
             peer_metadata.insert(existing_node.id, backend_peer.clone());
             
@@ -474,20 +421,35 @@ async fn sync_peers_to_db(
             // New node, add to database
             info!("Adding new peer from backend: {}", backend_peer.name);
 
+            // Parse host and port from public_ip
+            // Format could be "IP:PORT" or just "IP"
+            let (host, port) = if let Some(public_ip) = &backend_peer.public_ip {
+                if let Some((ip, port_str)) = public_ip.split_once(':') {
+                    (ip.to_string(), port_str.parse::<i32>().unwrap_or(11010))
+                } else {
+                    // No port specified, use default
+                    (public_ip.clone(), 11010)
+                }
+            } else {
+                // No public_ip provided, skip this peer
+                warn!("Peer {} has no public_ip, skipping", backend_peer.name);
+                continue;
+            };
+
             // Import the API models module
             use crate::api::models::CreateNodeRequest;
 
             let create_req = CreateNodeRequest {
                 name: backend_peer.name.clone(),
-                host: backend_peer.host.clone(),
-                port: backend_peer.port,
-                protocol: backend_peer.protocol.clone(),
+                host,
+                port,
+                protocol: backend_peer.protocol.clone().unwrap_or_else(|| String::from("tcp")),
                 description: Some(format!(
                     "Auto-added from backend (ID: {})",
                     backend_peer.id
                 )),
                 max_connections: 100,
-                allow_relay: true,
+                allow_relay: backend_peer.allow_relay.unwrap_or(true),
                 network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
                 network_secret: backend_peer.network_secret.clone(),
                 qq_number: None,
