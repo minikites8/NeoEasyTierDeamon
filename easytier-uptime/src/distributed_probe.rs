@@ -205,15 +205,21 @@ impl DistributedProbe {
 
                 // Determine overall status
                 let status = if total_nodes == 0 {
-                    "Online" // No nodes to monitor yet, but probe is running
+                    "online" // No nodes to monitor yet, but probe is running
                 } else {
-                    "Online" // Probe is working regardless of peer health
+                    "online" // Probe is working regardless of peer health
                 };
+
+                // Calculate peer count (total healthy peers)
+                let peer_count = healthy_nodes as i32;
+
+                // Calculate latency in milliseconds (default to 0 if no data)
+                let latency_ms = avg_response_time.unwrap_or(0);
 
                 // Report with ID 0 to represent the probe node itself (not a specific peer)
                 // TODO: This may need to be updated based on backend API requirements
                 match backend_client
-                    .report_status(0, status, avg_response_time, Some(metadata))
+                    .report_status(0, status, latency_ms, peer_count)
                     .await
                 {
                     Ok(_) => {
@@ -238,26 +244,28 @@ impl DistributedProbe {
             .await
             .context("Failed to get current nodes")?;
 
-        let current_node_map: HashMap<String, shared_nodes::Model> = current_nodes
-            .into_iter()
-            .map(|n| (format!("{}:{}", n.host, n.port), n))
-            .collect();
-
-        let mut synced_keys = std::collections::HashSet::new();
+        // Create a map keyed by backend node ID for easier lookup
+        let mut current_node_map: HashMap<i32, shared_nodes::Model> = HashMap::new();
+        for node in current_nodes {
+            // Extract backend peer ID from description
+            if let Some(id_str) = node.description
+                .strip_prefix("Auto-added from backend (ID: ")
+                .and_then(|s| s.strip_suffix(")")) {
+                if let Ok(backend_id) = id_str.parse::<i32>() {
+                    current_node_map.insert(backend_id, node);
+                }
+            }
+        }
 
         // Add or update peers from backend
         for backend_peer in backend_peers {
-            let key = format!("{}:{}", backend_peer.host, backend_peer.port);
-            synced_keys.insert(key.clone());
-
-            if let Some(existing_node) = current_node_map.get(&key) {
+            if let Some(existing_node) = current_node_map.get(&backend_peer.id) {
                 // Node already exists
                 // Check if network_secret or other fields need to be updated
                 let backend_secret = backend_peer.network_secret.clone().unwrap_or_else(|| String::new());
                 let backend_network_name = backend_peer.network_name.clone().unwrap_or_else(|| String::from("default"));
                 
                 let needs_update = existing_node.name != backend_peer.name
-                    || existing_node.protocol != backend_peer.protocol
                     || existing_node.network_name != backend_network_name
                     || existing_node.network_secret != backend_secret;
                 
@@ -266,7 +274,6 @@ impl DistributedProbe {
                     if let Ok(Some(node)) = NodeOperations::get_node_by_id(db, existing_node.id).await {
                         let mut active_model = node.into_active_model();
                         active_model.name = Set(backend_peer.name.clone());
-                        active_model.protocol = Set(backend_peer.protocol.clone());
                         active_model.network_name = Set(backend_network_name);
                         active_model.network_secret = Set(backend_secret);
                         
@@ -285,15 +292,30 @@ impl DistributedProbe {
                 // New node, add to database
                 info!("Adding new peer from backend: {}", backend_peer.name);
 
+                // Parse host and port from public_ip
+                // Format could be "IP:PORT" or just "IP"
+                let (host, port) = if let Some(public_ip) = &backend_peer.public_ip {
+                    if let Some((ip, port_str)) = public_ip.split_once(':') {
+                        (ip.to_string(), port_str.parse::<i32>().unwrap_or(11010))
+                    } else {
+                        // No port specified, use default
+                        (public_ip.clone(), 11010)
+                    }
+                } else {
+                    // No public_ip provided, skip this peer
+                    warn!("Peer {} has no public_ip, skipping", backend_peer.name);
+                    continue;
+                };
+
                 // Create node request
                 let create_req = crate::api::models::CreateNodeRequest {
                     name: backend_peer.name.clone(),
-                    host: backend_peer.host.clone(),
-                    port: backend_peer.port,
-                    protocol: backend_peer.protocol.clone(),
+                    host,
+                    port,
+                    protocol: backend_peer.protocol.clone().unwrap_or_else(|| String::from("tcp")),
                     description: Some(format!("Auto-added from backend (ID: {})", backend_peer.id)),
                     max_connections: 100,
-                    allow_relay: true,
+                    allow_relay: backend_peer.allow_relay.unwrap_or(true),
                     network_name: backend_peer.network_name.clone().unwrap_or_else(|| String::from("default")),
                     network_secret: backend_peer.network_secret.clone(),
                     qq_number: None,

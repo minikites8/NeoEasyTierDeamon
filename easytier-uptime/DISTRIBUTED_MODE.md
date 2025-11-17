@@ -62,86 +62,109 @@ easytier-uptime \
 
 The backend must implement these endpoints:
 
-### 1. GET /peers - Peer Discovery
+### 1. GET /node-status - Get Node IDs
 
-Fetch the list of peers to monitor.
+Fetch the list of all node IDs (no authentication required).
 
 **Request:**
 ```
-GET /peers?region=us-west
+GET /node-status
+```
+
+**Response:**
+```json
+[
+  {
+    "node_id": 0,
+    "status": "online",
+    "latency_ms": 0,
+    "peer": 0,
+    "last_heartbeat": "2025-11-17T13:01:33.407Z"
+  }
+]
+```
+
+### 2. GET /nodes/{node_id}/private-info - Get Node Connection Details
+
+Fetch private connection information for a specific node (requires authentication).
+
+**Request:**
+```
+GET /nodes/{node_id}/private-info
 Authorization: Bearer {apiKey}
 ```
 
 **Response:**
 ```json
 {
-  "code": 200,
-  "message": "Peer 节点列表获取成功",
-  "data": {
-    "peers": [
-      {
-        "id": 1,
-        "name": "节点1",
-        "host": "192.168.1.100",
-        "port": 25565,
-        "protocol": "http",
-        "network_name": "main",
-        "status": "Online",
-        "response_time": 50
-      }
-    ],
-    "total_available": 100,
-    "next_batch_available": true
-  }
+  "id": 0,
+  "name": "string",
+  "protocol": "string",
+  "description": "string",
+  "sponsor": "string",
+  "location": "string",
+  "allow_relay": true,
+  "created_at": "2025-11-17T13:05:31.321Z",
+  "updated_at": "2025-11-17T13:05:31.321Z",
+  "public_ip": "string",
+  "network_name": "string",
+  "network_secret": "string"
 }
 ```
 
-### 2. PUT /nodes/status - Status Reporting
+### 3. POST /nodes/:node_id/heartbeat - Submit Node Status
 
-Report the probe node's own status.
+Report node status information (requires authentication).
 
 **Request:**
 ```
-PUT /nodes/status
-x-node-token: {nodeToken}
+POST /nodes/{node_id}/heartbeat
+Authorization: Bearer {apiKey}
 Content-Type: application/json
 
 {
-  "status": "Online",
-  "response_time": 50,
-  "metadata": {
-    "version": "0.1.0",
-    "region": "us-west",
-    "peers_count": 10,
-    "reachable_peers": 8,
-    "avg_peer_rtt": 45,
-    "max_peer_rtt": 120
-  }
+  "status": "online",
+  "peer": 0,
+  "latency_ms": 0
 }
 ```
 
 **Field Descriptions:**
-- `status` (required): Probe node status, supports `Online` / `Offline`
-- `response_time` (optional): **Average latency from probe to all peers (milliseconds)**
-  - Calculation: Average RTT of all successfully probed peers
-  - Type: Integer (milliseconds)
-  - **Note:** Fixed issue where microseconds were incorrectly reported - now correctly converted to milliseconds
-- `metadata` (optional): Additional information
-  - `version`: Probe node version
-  - `region`: Node region identifier
-  - `peers_count`: Number of peers fetched in this round
-  - `reachable_peers`: Number of successfully probed peers
-  - `avg_peer_rtt`: Average RTT (milliseconds)
-  - `max_peer_rtt`: Maximum RTT (milliseconds)
+- `status` (required): Node status, supports `online` / `offline`
+- `peer` (required): Number of connected peers (integer)
+- `latency_ms` (required): Latency in milliseconds (integer)
 
 **Response:**
 ```json
 {
-  "code": 200,
-  "message": "节点状态更新成功",
-  "data": null
+  "success": true,
+  "heartbeat": {
+    "id": 0,
+    "node_id": 0,
+    "status": "online",
+    "peer": 0,
+    "latency_ms": 0,
+    "timestamp": "2025-11-17T12:59:28.437Z"
+  },
+  "nodeStatus": {
+    "node_id": 0,
+    "status": "online",
+    "latency_ms": 0,
+    "peer": 0,
+    "last_heartbeat": "2025-11-17T12:59:28.437Z"
+  }
 }
 ```
+
+## Authentication Changes
+
+**Important:** The API authentication method has been updated:
+
+- **Old Method:** Used `x-api-key` header for authentication
+- **New Method:** Uses `Authorization: Bearer {apiKey}` header
+- All authenticated endpoints now use the Bearer token authentication scheme
+- The `GET /node-status` endpoint does not require authentication
+- The `GET /nodes/{node_id}/private-info` and `POST /nodes/{node_id}/heartbeat` endpoints require Bearer token authentication
 
 ## Latency Reporting Fix
 

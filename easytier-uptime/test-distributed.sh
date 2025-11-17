@@ -59,10 +59,24 @@ else
     exit 1
 fi
 
-if grep -q "GET /peers" DISTRIBUTED_MODE.md; then
+if grep -q "GET /node-status" DISTRIBUTED_MODE.md; then
     echo "✓ Backend API documented"
 else
     echo "✗ Backend API not documented"
+    exit 1
+fi
+
+if grep -q "POST /nodes/{node_id}/heartbeat" DISTRIBUTED_MODE.md; then
+    echo "✓ Heartbeat endpoint documented"
+else
+    echo "✗ Heartbeat endpoint not documented"
+    exit 1
+fi
+
+if grep -q "Authorization: Bearer" DISTRIBUTED_MODE.md; then
+    echo "✓ Bearer token authentication documented"
+else
+    echo "✗ Bearer token authentication not documented"
     exit 1
 fi
 echo ""
