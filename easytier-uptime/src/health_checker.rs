@@ -246,6 +246,8 @@ pub struct HealthChecker {
     node_tasks: DashMap<i32, ScopedTask<()>>,
     node_records: Arc<DashMap<i32, HealthyMemRecord>>,
     node_cfg: Arc<DashMap<i32, TomlConfigLoader>>,
+    // Maps network_identity (network_name + network_secret) to (instance_uuid, ref_count)
+    network_instances: Arc<DashMap<String, (uuid::Uuid, usize)>>,
 }
 
 impl HealthChecker {
@@ -258,7 +260,13 @@ impl HealthChecker {
             node_tasks: DashMap::new(),
             node_records: Arc::new(DashMap::new()),
             node_cfg: Arc::new(DashMap::new()),
+            network_instances: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Generate a unique key for network identity (network_name + network_secret)
+    fn get_network_key(network_name: &str, network_secret: &str) -> String {
+        format!("{}::{}", network_name, network_secret)
     }
 
     /// 启动时从数据库加载所有节点的健康记录到内存
@@ -448,17 +456,43 @@ impl HealthChecker {
     }
 
     pub async fn add_node(&self, node_id: i32) -> anyhow::Result<()> {
-        let cfg = self.get_node_cfg(node_id, None).await?;
-        info!(
-            "Add node {} to health checker, cfg: {}",
-            node_id,
-            cfg.dump()
-        );
+        let node_info = NodeOperations::get_node_by_id(&self.db, node_id)
+            .await
+            .with_context(|| format!("failed to get node by id: {}", node_id))?
+            .ok_or_else(|| anyhow::anyhow!("node not found"))?;
 
-        self.instance_mgr
-            .run_network_instance(cfg.clone(), true, ConfigFileControl::STATIC_CONFIG)
-            .with_context(|| "failed to run network instance")?;
-        self.inst_id_map.insert(node_id, cfg.get_id());
+        let network_key = Self::get_network_key(&node_info.network_name, &node_info.network_secret);
+        
+        // Check if we already have an instance for this network
+        let inst_id = if let Some(mut entry) = self.network_instances.get_mut(&network_key) {
+            // Reuse existing instance
+            let (uuid, ref_count) = entry.value_mut();
+            *ref_count += 1;
+            info!(
+                "Reusing existing network instance for node {} (network: {}, ref_count: {})",
+                node_id, network_key, *ref_count
+            );
+            *uuid
+        } else {
+            // Create new instance for this network
+            let cfg = self.get_node_cfg_with_model(&node_info, None).await?;
+            info!(
+                "Creating new network instance for node {} (network: {}), cfg: {}",
+                node_id,
+                network_key,
+                cfg.dump()
+            );
+
+            self.instance_mgr
+                .run_network_instance(cfg.clone(), true, ConfigFileControl::STATIC_CONFIG)
+                .with_context(|| "failed to run network instance")?;
+            
+            let inst_id = cfg.get_id();
+            self.network_instances.insert(network_key.clone(), (inst_id, 1));
+            inst_id
+        };
+
+        self.inst_id_map.insert(node_id, inst_id);
 
         // 初始化内存记录（如果不存在）
         if !self.node_records.contains_key(&node_id) {
@@ -483,10 +517,13 @@ impl HealthChecker {
             }
         }
 
+        // Get node cfg for storing
+        let cfg = self.get_node_cfg_with_model(&node_info, Some(inst_id)).await?;
+
         // 启动健康检查任务
         let task = ScopedTask::from(tokio::spawn(Self::node_health_check_task(
             node_id,
-            cfg.get_id(),
+            inst_id,
             Arc::clone(&self.instance_mgr),
             self.db.clone(),
             Arc::clone(&self.node_records),
@@ -499,10 +536,46 @@ impl HealthChecker {
 
     pub async fn remove_node(&self, node_id: i32) -> anyhow::Result<()> {
         self.node_tasks.remove(&node_id);
-        if let Some(inst_id) = self.inst_id_map.remove(&node_id) {
-            let _ = self.instance_mgr.delete_network_instance(vec![inst_id.1]);
+        
+        // Get the instance ID and node config before removing
+        if let Some((_key, inst_id)) = self.inst_id_map.remove(&node_id) {
+            if let Some((_key, cfg)) = self.node_cfg.remove(&node_id) {
+                let network_identity = cfg.get_network_identity();
+                let network_key = Self::get_network_key(
+                    &network_identity.network_name,
+                    &network_identity.network_secret.as_deref().unwrap_or(""),
+                );
+                
+                // Decrement reference count for this network instance
+                let should_delete = if let Some(mut entry) = self.network_instances.get_mut(&network_key) {
+                    let (_, ref_count) = entry.value_mut();
+                    *ref_count -= 1;
+                    let should_delete = *ref_count == 0;
+                    info!(
+                        "Decremented ref_count for network {} (remaining: {})",
+                        network_key, *ref_count
+                    );
+                    should_delete
+                } else {
+                    // Shouldn't happen, but handle it gracefully
+                    warn!("Network instance not found in map for key: {}", network_key);
+                    true
+                };
+                
+                // Only delete the instance if no more nodes are using it
+                if should_delete {
+                    info!("Deleting network instance {} (no more nodes using it)", inst_id);
+                    let _ = self.instance_mgr.delete_network_instance(vec![inst_id]);
+                    self.network_instances.remove(&network_key);
+                } else {
+                    info!(
+                        "Keeping network instance {} (still used by other nodes)",
+                        inst_id
+                    );
+                }
+            }
         }
-        self.node_cfg.remove(&node_id);
+        
         // 保留内存记录，不删除，以便后续查询历史数据
         info!(
             "Removed health check task for node {}, memory record retained",
