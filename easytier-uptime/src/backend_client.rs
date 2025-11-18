@@ -1,9 +1,26 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+/// Custom deserializer that handles both string timestamps and empty objects
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    use serde_json::Value;
+    
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => Ok(Some(s)),
+        Value::Object(obj) if obj.is_empty() => Ok(None),
+        Value::Null => Ok(None),
+        _ => Err(Error::custom("expected string, null, or empty object for timestamp")),
+    }
+}
 
 /// Backend API client for distributed probe mode
 pub struct BackendClient {
@@ -121,7 +138,8 @@ pub struct HeartbeatData {
     pub status: String,
     pub peer: i32,
     pub latency_ms: i32,
-    pub timestamp: String,
+    #[serde(deserialize_with = "deserialize_optional_timestamp")]
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,7 +148,8 @@ pub struct NodeStatusData {
     pub status: String,
     pub latency_ms: i32,
     pub peer: i32,
-    pub last_heartbeat: String,
+    #[serde(deserialize_with = "deserialize_optional_timestamp")]
+    pub last_heartbeat: Option<String>,
 }
 
 impl BackendClient {
@@ -443,5 +462,46 @@ mod tests {
         let response = response.unwrap();
         assert!(response.success);
         assert_eq!(response.heartbeat.node_id, 0);
+        assert_eq!(response.heartbeat.timestamp, Some("2025-11-17T12:59:28.437Z".to_string()));
+        assert_eq!(response.node_status.last_heartbeat, Some("2025-11-17T12:59:28.437Z".to_string()));
+    }
+
+    #[test]
+    fn test_heartbeat_response_deserialization_with_empty_timestamps() {
+        // Test the actual format from the problem statement
+        let json = r#"{
+            "success": true,
+            "heartbeat": {
+                "id": 48,
+                "node_id": 2,
+                "status": "online",
+                "peer": 0,
+                "latency_ms": 39,
+                "timestamp": {}
+            },
+            "nodeStatus": {
+                "node_id": 2,
+                "status": "online",
+                "latency_ms": 39,
+                "peer": 0,
+                "last_heartbeat": {}
+            }
+        }"#;
+        
+        let response: Result<HeartbeatResponse, _> = serde_json::from_str(json);
+        assert!(response.is_ok());
+        let response = response.unwrap();
+        assert!(response.success);
+        assert_eq!(response.heartbeat.node_id, 2);
+        assert_eq!(response.heartbeat.id, 48);
+        assert_eq!(response.heartbeat.status, "online");
+        assert_eq!(response.heartbeat.peer, 0);
+        assert_eq!(response.heartbeat.latency_ms, 39);
+        assert_eq!(response.heartbeat.timestamp, None);
+        assert_eq!(response.node_status.node_id, 2);
+        assert_eq!(response.node_status.status, "online");
+        assert_eq!(response.node_status.latency_ms, 39);
+        assert_eq!(response.node_status.peer, 0);
+        assert_eq!(response.node_status.last_heartbeat, None);
     }
 }
