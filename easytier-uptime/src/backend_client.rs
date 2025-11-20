@@ -76,7 +76,8 @@ pub struct NodeStatus {
 #[derive(Debug, Deserialize)]
 pub struct NodePrivateInfo {
     pub id: i32,
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub protocol: Option<String>,
     #[serde(default)]
@@ -232,10 +233,15 @@ impl BackendClient {
 
                     match response.json::<NodePrivateInfo>().await {
                         Ok(private_info) => {
+                            // Generate a default name if not provided
+                            let name = private_info.name
+                                .or_else(|| private_info.network_name.clone())
+                                .unwrap_or_else(|| format!("node-{}", private_info.id));
+                            
                             // Combine node status and private info into BackendPeer
                             let peer = BackendPeer {
                                 id: private_info.id,
-                                name: private_info.name,
+                                name,
                                 description: private_info.description,
                                 sponsor: private_info.sponsor,
                                 location: private_info.location,
@@ -433,7 +439,30 @@ mod tests {
         assert!(private_info.is_ok());
         let private_info = private_info.unwrap();
         assert_eq!(private_info.id, 0);
+        assert_eq!(private_info.name, Some("string".to_string()));
         assert_eq!(private_info.network_secret, Some("string".to_string()));
+    }
+
+    #[test]
+    fn test_node_private_info_deserialization_without_name() {
+        // Test the actual format from the user's API response
+        let json = r#"{
+            "id": 2,
+            "protocol": "tcp",
+            "public_ip": "bj.et-hub.top",
+            "network_name": "et-hub",
+            "network_secret": "et-hub"
+        }"#;
+        
+        let private_info: Result<NodePrivateInfo, _> = serde_json::from_str(json);
+        assert!(private_info.is_ok());
+        let private_info = private_info.unwrap();
+        assert_eq!(private_info.id, 2);
+        assert_eq!(private_info.name, None);
+        assert_eq!(private_info.protocol, Some("tcp".to_string()));
+        assert_eq!(private_info.public_ip, Some("bj.et-hub.top".to_string()));
+        assert_eq!(private_info.network_name, Some("et-hub".to_string()));
+        assert_eq!(private_info.network_secret, Some("et-hub".to_string()));
     }
 
     #[test]
