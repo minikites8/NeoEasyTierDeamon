@@ -371,7 +371,7 @@ impl HealthChecker {
             node_info.network_secret.clone(),
         ));
 
-        cfg.set_hostname(Some("HealthCheckNode".to_string()));
+        cfg.set_hostname(Some("NeoUptimeDeamon".to_string()));
 
         let mut flags = cfg.get_flags();
         flags.no_tun = true;
@@ -536,7 +536,7 @@ impl HealthChecker {
         let Some(dst_node) = p.iter().find(|x| {
             // we disable p2p, so we only check direct connected peer
             x.route.as_ref().is_some_and(|route| {
-                !route.feature_flag.unwrap().is_public_server && route.hostname != "HealthCheckNode"
+                !route.feature_flag.unwrap().is_public_server && route.hostname != "NeoUptimeDeamon"
             }) && x.peer.as_ref().is_some_and(|p| !p.conns.is_empty())
         }) else {
             anyhow::bail!(
