@@ -6,13 +6,13 @@
 //! - Reports probe status and peer latency statistics to backend
 //! - Communicates only via HTTP API (no local database dependency)
 
-mod api;
 mod backend_client;
 mod config;
 mod db;
 mod health_checker;
 mod health_checker_manager;
 mod migrator;
+mod models;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -436,8 +436,8 @@ async fn sync_peers_to_db(
                 continue;
             };
 
-            // Import the API models module
-            use crate::api::models::CreateNodeRequest;
+            // Import the models module
+            use crate::models::CreateNodeRequest;
 
             let create_req = CreateNodeRequest {
                 name: backend_peer.name.clone(),
