@@ -205,14 +205,6 @@ NeoEasyTierDeamon/
 - [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices
 - [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration
 
-### Contact Us
-
-- 💬 **[Telegram Group](https://t.me/easytier)**
-- 👥 **[QQ Group]**
-  - No.1 [949700262](https://qm.qq.com/q/wFoTUChqZW)
-  - No.2 [837676408](https://qm.qq.com/q/4V33DrfgHe)
-  - No.3 [957189589](https://qm.qq.com/q/YNyTQjwlai)
-
 ## License
 
 NeoUptime is released under the [MIT License](https://github.com/minikites8/NeoEasyTierDeamon/blob/main/LICENSE).

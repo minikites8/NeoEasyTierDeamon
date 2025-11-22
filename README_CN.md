@@ -206,14 +206,6 @@ NeoEasyTierDeamon/
 - [ZeroTier](https://www.zerotier.com/): 连接设备的全球虚拟网络
 - [TailScale](https://tailscale.com/): 旨在简化网络配置的 VPN 解决方案
 
-### 联系我们
-
-- 💬 **[Telegram 群组](https://t.me/easytier)**
-- 👥 **[QQ 群]**
-  - 1群 [949700262](https://qm.qq.com/q/wFoTUChqZW)
-  - 2群 [837676408](https://qm.qq.com/q/4V33DrfgHe)
-  - 3群 [957189589](https://qm.qq.com/q/YNyTQjwlai)
-
 ## 许可证
 
 NeoUptime 采用 [MIT 许可证](https://github.com/minikites8/NeoEasyTierDeamon/blob/main/LICENSE) 发布。
