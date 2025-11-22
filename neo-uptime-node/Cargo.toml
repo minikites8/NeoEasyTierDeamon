@@ -1,6 +1,6 @@
 [package]
 name = "neo-uptime-node"
-version = "0.1.0"
+version = "2.4.5-Neouptime"
 edition = "2021"
 
 [[bin]]
