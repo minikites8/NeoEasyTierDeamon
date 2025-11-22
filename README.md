@@ -1,287 +1,209 @@
-# EasyTier
+# NeoUptime
 
-[![Github release](https://img.shields.io/github/v/tag/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/releases)
-[![GitHub](https://img.shields.io/github/license/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/blob/main/LICENSE)
-[![GitHub last commit](https://img.shields.io/github/last-commit/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/commits/main)
-[![GitHub issues](https://img.shields.io/github/issues/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/issues)
-[![GitHub Core Actions](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
-[![GitHub GUI Actions](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
-[![GitHub Test Actions](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/test.yml)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EasyTier/EasyTier)
+[![GitHub](https://img.shields.io/github/license/minikites8/NeoEasyTierDeamon)](https://github.com/minikites8/NeoEasyTierDeamon/blob/main/LICENSE)
+[![GitHub last commit](https://img.shields.io/github/last-commit/minikites8/NeoEasyTierDeamon)](https://github.com/minikites8/NeoEasyTierDeamon/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/minikites8/NeoEasyTierDeamon)](https://github.com/minikites8/NeoEasyTierDeamon/issues)
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-> ✨ A simple, secure, decentralized virtual private network solution powered by Rust and Tokio
+> ✨ 独立的分布式 EasyTier 节点监控探测程序，用于监控 EasyTier 节点并向后端报告状态
 
-<p align="center">
-<img src="assets/config-page.png" width="300" alt="config page">
-<img src="assets/running-page.png" width="300" alt="running page">
-</p>
 
-📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
+## 特性
 
-## Features
+- ✨ **完全独立**：作为单独的 crate，与主服务完全解耦
+- 🚀 **轻量级**：只包含探测功能，资源占用更少
+- 📦 **易于部署**：通过环境变量配置，适合容器化和云原生部署
+- 🔒 **良好隔离**：探测节点故障不会影响后端主服务
+- 📊 **精确测量**：自动计算和上报延迟统计（RTT，单位毫秒）
+- 🌍 **分布式友好**：支持多地域部署，按需扩展
 
-### Core Features
+## 快速开始
 
-- 🔒 **Decentralized**: Nodes are equal and independent, no centralized services required  
-- 🚀 **Easy to Use**: Multiple operation methods via web, client, and command line  
-- 🌍 **Cross-Platform**: Supports Win/MacOS/Linux/FreeBSD/Android and X86/ARM/MIPS architectures  
-- 🔐 **Secure**: AES-GCM or WireGuard encryption, prevents man-in-the-middle attacks  
-
-### Advanced Capabilities
-
-- 🔌 **Efficient NAT Traversal**: Supports UDP and IPv6 traversal, works with NAT4-NAT4 networks  
-- 🌐 **Subnet Proxy**: Nodes can share subnets for other nodes to access  
-- 🔄 **Intelligent Routing**: Latency priority and automatic route selection for best network experience  
-- ⚡ **High Performance**: Zero-copy throughout the entire link, supports TCP/UDP/WSS/WG protocols  
-
-### Network Optimization
-
-- 📊 **UDP Loss Resistance**: KCP/QUIC proxy optimizes latency and bandwidth in high packet loss environments  
-- 🔧 **Web Management**: Easy configuration and monitoring through web interface  
-- 🛠️ **Zero Config**: Simple deployment with statically linked executables  
-
-## Quick Start
-
-### 📥 Installation
-
-Choose the installation method that best suits your needs:
+### 📥 构建
 
 ```bash
-# 1. Download pre-built binary (Recommended, All platforms supported)
-# Visit https://github.com/EasyTier/EasyTier/releases
+# 从工作区根目录构建
+cargo build -p neo-uptime-node --release
 
-# 2. Install via cargo (Latest development version)
-cargo install --git https://github.com/EasyTier/EasyTier.git easytier
-
-# 3. Install via Docker
-# See https://easytier.cn/en/guide/installation.html#installation-methods
-
-# 4. Linux Quick Install
-wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash -s install
-
-# 5. MacOS via Homebrew
-brew tap brewforge/chinese
-brew install --cask easytier-gui
-
-# 6. OpenWrt Luci Web UI
-# Visit https://github.com/EasyTier/luci-app-easytier
-
-# 7. (Optional) Install shell completions:
-easytier-core --gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
-easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-cli.fish
-
+# 编译后的二进制位于
+./target/release/neo-uptime-node
 ```
 
-### 🚀 Basic Usage
-
-#### Quick Networking with Shared Nodes
-
-EasyTier supports quick networking using shared public nodes. When you don't have a public IP, you can use the free shared nodes provided by the EasyTier community. Nodes will automatically attempt NAT traversal and establish P2P connections. When P2P fails, data will be relayed through shared nodes.
-
-The currently deployed shared public node is `tcp://public.easytier.cn:11010`.
-
-When using shared nodes, each node entering the network needs to provide the same `--network-name` and `--network-secret` parameters as the unique identifier of the network.
-
-Taking two nodes as an example (Please use more complex network name to avoid conflicts):
-
-1. Run on Node A:
+### 🚀 运行
 
 ```bash
-# Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
+# 使用命令行参数
+./target/release/neo-uptime-node \
+  --backend-base-url "https://backend.example.com" \
+  --api-key "your-api-key" \
+  --region "cn-hz"
+
+# 或使用环境变量
+export BACKEND_BASE_URL="https://backend.example.com"
+export API_KEY="your-api-key"
+export REGION="cn-hz"
+./target/release/neo-uptime-node
 ```
 
-2. Run on Node B:
+## 配置说明
+
+### 必需配置
+
+| 环境变量 | 命令行参数 | 说明 |
+|---------|-----------|------|
+| `BACKEND_BASE_URL` | `--backend-base-url` | 后端 API 基础地址 |
+| `API_KEY` | `--api-key` | API Key（用于请求认证） |
+
+### 可选配置
+
+| 环境变量 | 命令行参数 | 默认值 | 说明 |
+|---------|-----------|--------|------|
+| `REGION` | `--region` | 无 | 区域标识符 |
+| `PEER_FETCH_INTERVAL` | `--peer-fetch-interval` | `60` | 获取 peer 列表的间隔（秒） |
+| `STATUS_REPORT_INTERVAL` | `--status-report-interval` | `30` | 上报 peer 状态的间隔（秒） |
+| `HEALTH_CHECK_INTERVAL` | `--health-check-interval` | `5` | 健康检查间隔（秒） |
+| `DATABASE_PATH` | `--database-path` | `neo-uptime-node.db` | 本地缓存数据库路径 |
+
+## Docker 部署
+
+### Dockerfile 示例
+
+```dockerfile
+FROM rust:1.70 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build -p neo-uptime-node --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/neo-uptime-node /usr/local/bin/
+ENTRYPOINT ["neo-uptime-node"]
+```
+
+### 运行容器
 
 ```bash
-# Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
+docker build -t neo-uptime-node:latest .
+
+docker run -d \
+  --name neo-uptime-node \
+  --restart unless-stopped \
+  -e BACKEND_BASE_URL="https://backend.example.com" \
+  -e API_KEY="your-api-key" \
+  -e REGION="cn-hz" \
+  neo-uptime-node:latest
 ```
 
-After successful execution, you can check the network status using `easytier-cli`:
+## 工作原理
 
-```text
-| ipv4         | hostname       | cost  | lat_ms | loss_rate | rx_bytes | tx_bytes | tunnel_proto | nat_type | id         | version         |
-| ------------ | -------------- | ----- | ------ | --------- | -------- | -------- | ------------ | -------- | ---------- | --------------- |
-| 10.126.126.1 | abc-1          | Local | *      | *         | *        | *        | udp          | FullCone | 439804259  | 2.4.5-70e69a38~ |
-| 10.126.126.2 | abc-2          | p2p   | 3.452  | 0         | 17.33 kB | 20.42 kB | udp          | FullCone | 390879727  | 2.4.5-70e69a38~ |
-|              | PublicServer_a | p2p   | 27.796 | 0.000     | 50.01 kB | 67.46 kB | tcp          | Unknown  | 3771642457 | 2.4.5-70e69a38~ |
+1. **启动阶段**
+   - 初始化本地 SQLite 数据库（用于缓存）
+   - 测试与后端的连接
+   - 启动健康检查管理器
+
+2. **运行循环**
+   - **Peer 获取**（默认每 60 秒）：从后端获取需要监控的节点列表
+   - **健康检查**（每个 peer 默认每 5 秒）：使用 EasyTier 原生探测逻辑测量 RTT
+   - **状态上报**（默认每 30 秒）：逐个上报每个 peer 的健康状态和延迟
+
+3. **延迟计算**
+   - 自动将 EasyTier 内部的微秒（μs）延迟转换为毫秒（ms）
+   - 每个 peer 独立计算和上报 RTT
+
+## 后端 API 要求
+
+neo-uptime-node 需要后端实现以下 API 端点：
+
+### GET /peers - 获取节点列表
+
+请求：
+```
+GET /peers?region=cn-hz
+x-api-key: {API_KEY}
 ```
 
-You can test connectivity between nodes:
+响应：
+```json
+{
+  "code": 200,
+  "message": "Success",
+  "data": {
+    "peers": [
+      {
+        "id": 1,
+        "name": "Node 1",
+        "host": "192.168.1.1",
+        "port": 11010,
+        "protocol": "tcp",
+        "network_name": "default",
+        "network_secret": null,
+        "public_ip": "192.168.1.1:11010"
+      }
+    ]
+  }
+}
+```
+
+### PUT /nodes/status - 上报节点状态
+
+请求：
+```
+PUT /nodes/status
+x-api-key: {API_KEY}
+Content-Type: application/json
+
+{
+  "id": 1,
+  "status": "online",
+  "response_time": 25,
+  "peer_count": 3
+}
+```
+
+响应：
+```json
+{
+  "code": 200,
+  "message": "Success"
+}
+```
+
+## 日志和调试
+
+使用 `RUST_LOG` 环境变量控制日志级别：
 
 ```bash
-# Test connectivity
-ping 10.126.126.1
-ping 10.126.126.2
+# 详细日志
+RUST_LOG=debug ./target/release/neo-uptime-node ...
+
+# 只显示错误
+RUST_LOG=error ./target/release/neo-uptime-node ...
+
+# 针对特定模块
+RUST_LOG=neo_uptime_node=debug,backend_client=trace ./target/release/neo-uptime-node ...
 ```
 
-Note: If you cannot ping through, it may be that the firewall is blocking incoming traffic. Please turn off the firewall or add allow rules.
+## 项目结构
 
-To improve availability, you can connect to multiple shared nodes simultaneously:
-
-```bash
-# Connect to multiple shared nodes
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010 -p udp://public.easytier.cn:11010
 ```
-
-Once your network is set up successfully, you can easily configure it to start automatically on system boot. Refer to the [One-Click Register Service guide](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) for step-by-step instructions on registering EasyTier as a system service.
-
-#### Decentralized Networking
-
-EasyTier is fundamentally decentralized, with no distinction between server and client. As long as one device can communicate with any node in the virtual network, it can join the virtual network. Here's how to set up a decentralized network:
-
-1. Start First Node (Node A):
-
-```bash
-# Start the first node
-sudo easytier-core -i 10.144.144.1
-```
-
-After startup, this node will listen on the following ports by default:
-- TCP: 11010
-- UDP: 11010
-- WebSocket: 11011
-- WebSocket SSL: 11012
-- WireGuard: 11013
-
-2. Connect Second Node (Node B):
-
-```bash
-# Connect to the first node using its public IP
-sudo easytier-core -i 10.144.144.2 -p udp://FIRST_NODE_PUBLIC_IP:11010
-```
-
-3. Verify Connection:
-
-```bash
-# Test connectivity
-ping 10.144.144.2
-
-# View connected peers
-easytier-cli peer
-
-# View routing information
-easytier-cli route
-
-# View local node information
-easytier-cli node
-```
-
-For more nodes to join the network, they can connect to any existing node in the network using the `-p` parameter:
-
-```bash
-# Connect to any existing node using its public IP
-sudo easytier-core -i 10.144.144.3 -p udp://ANY_EXISTING_NODE_PUBLIC_IP:11010
-```
-
-### 🔍 Advanced Features
-
-#### Subnet Proxy
-
-Assuming the network topology is as follows, Node B wants to share its accessible subnet 10.1.1.0/24 with other nodes:
-
-```mermaid
-flowchart LR
-
-subgraph Node A Public IP 22.1.1.1
-nodea[EasyTier<br/>10.144.144.1]
-end
-
-subgraph Node B
-nodeb[EasyTier<br/>10.144.144.2]
-end
-
-id1[[10.1.1.0/24]]
-
-nodea <--> nodeb <-.-> id1
-```
-
-To share a subnet, add the `-n` parameter when starting EasyTier:
-
-```bash
-# Share subnet 10.1.1.0/24 with other nodes
-sudo easytier-core -i 10.144.144.2 -n 10.1.1.0/24
-```
-
-Subnet proxy information will automatically sync to each node in the virtual network, and each node will automatically configure the corresponding route. You can verify the subnet proxy setup:
-
-1. Check if the routing information has been synchronized (the proxy_cidrs column shows the proxied subnets):
-
-```bash
-# View routing information
-easytier-cli route
-```
-
-![Routing Information](/assets/image-3.png)
-
-2. Test if you can access nodes in the proxied subnet:
-
-```bash
-# Test connectivity to proxied subnet
-ping 10.1.1.2
-```
-
-#### WireGuard Integration
-
-EasyTier can act as a WireGuard server, allowing any device with a WireGuard client (including iOS and Android) to access the EasyTier network. Here's an example setup:
-
-```mermaid
-flowchart LR
-
-ios[[iPhone<br/>WireGuard Installed]]
-
-subgraph Node A Public IP 22.1.1.1
-nodea[EasyTier<br/>10.144.144.1]
-end
-
-subgraph Node B
-nodeb[EasyTier<br/>10.144.144.2]
-end
-
-id1[[10.1.1.0/24]]
-
-ios <-.-> nodea <--> nodeb <-.-> id1
-```
-
-1. Start EasyTier with WireGuard portal enabled:
-
-```bash
-# Listen on 0.0.0.0:11013 and use 10.14.14.0/24 subnet for WireGuard clients
-sudo easytier-core -i 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
-```
-
-2. Get WireGuard client configuration:
-
-```bash
-# Get WireGuard client configuration
-easytier-cli vpn-portal
-```
-
-3. In the output configuration:
-   - Set `Interface.Address` to an available IP from the WireGuard subnet
-   - Set `Peer.Endpoint` to the public IP/domain of your EasyTier node
-   - Import the modified configuration into your WireGuard client
-
-#### Self-Hosted Public Shared Node
-
-You can run your own public shared node to help other nodes discover each other. A public shared node is just a regular EasyTier network (with same network name and secret) that other networks can connect to.
-
-To run a public shared node:
-
-```bash
-# No need to specify IPv4 address for public shared nodes
-sudo easytier-core --network-name mysharednode --network-secret mysharednode
+NeoEasyTierDeamon/
+├── easytier/              # EasyTier 核心代码
+├── neo-uptime-node/       # NeoUptime 分布式探测节点
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── backend_client.rs
+│   │   ├── health_checker.rs
+│   │   └── ...
+│   └── Cargo.toml
+└── Cargo.toml            # 工作区配置
 ```
 
 ## Related Projects
 
-- [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
-- [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
-- [vpncloud](https://github.com/dswd/vpncloud): A P2P Mesh VPN
-- [Candy](https://github.com/lanthora/candy): A reliable, low-latency, and anti-censorship virtual private network
+- [EasyTier](https://github.com/EasyTier/EasyTier): A simple, secure, decentralized virtual private network solution
+- [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices
+- [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration
 
 ### Contact Us
 
@@ -293,33 +215,17 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 
 ## License
 
-EasyTier is released under the [LGPL-3.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE).
+NeoUptime is released under the [MIT License](https://github.com/minikites8/NeoEasyTierDeamon/blob/main/LICENSE).
 
-## Sponsor
+## 贡献指南
 
-CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.
+1. Fork 项目
+2. 创建特性分支
+3. 提交更改
+4. 推送到分支
+5. 创建 Pull Request
 
-<p align="center">
-  <a href="https://edgeone.ai/?from=github" target="_blank">
-    <img src="assets/edgeone.png" width="200" alt="EdgeOne Logo">
-  </a>
-</p>
+## 支持
 
-Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
+如有问题或建议，请提交 Issue 或联系开发团队。
 
-<p align="center">
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/langlang.png" width="200">
-</a>
-<a href="https://langlangy.cn/?i26c5a5" target="_blank">
-<img src="assets/raincloud.png" width="200">
-</a>
-</p>
-
-
-If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require a lot of time and effort, and your sponsorship will help us better maintain and improve EasyTier.
-
-<p align="center">
-<img src="assets/wechat.png" width="200">
-<img src="assets/alipay.png" width="200">
-</p>
