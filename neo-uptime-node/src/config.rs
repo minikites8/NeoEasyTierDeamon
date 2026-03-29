@@ -4,6 +4,21 @@ use std::path::PathBuf;
 
 use easytier::common::config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfig};
 
+/// Configuration for the Socket.IO connection to the upstream server
+#[derive(Debug, Clone)]
+pub struct SocketConnectionConfig {
+    /// Socket.IO server URL (e.g. "http://uptime.1tmc.top:8081")
+    pub url: String,
+    /// User-Agent string sent during connection
+    pub user_agent: String,
+    /// Cluster ID for authentication
+    pub cluster_id: String,
+    /// Cluster secret for authentication
+    pub cluster_secret: String,
+    /// Socket.IO endpoint path (e.g. "/api/socket.io")
+    pub socket_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,

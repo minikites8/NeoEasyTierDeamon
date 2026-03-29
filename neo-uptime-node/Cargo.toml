@@ -37,6 +37,10 @@ thiserror = "1.0"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
+# Socket.IO client
+rust_socketio = { version = "0.5", features = ["async"] }
+futures-util = "0.3"
+
 # Additional utilities
 dashmap = "6.1.0"
 clap = { version = "4.0", features = ["derive"] }
