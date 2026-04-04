@@ -213,7 +213,7 @@ impl TokenManager {
             .unwrap_or_else(|| Utc::now().timestamp());
         let nonce = challenge_data
             .nonce
-            .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or_default().to_string());
+            .unwrap_or_else(|| Utc::now().timestamp_millis().to_string());
 
         let signature = sign_challenge(
             &self.config.cluster_secret,
@@ -290,6 +290,37 @@ fn build_url(base: &str, path: &str) -> String {
     }
 }
 
+fn is_auth_error_payload(payload: &Payload) -> bool {
+    fn string_has_auth_keyword(s: &str) -> bool {
+        let v = s.to_lowercase();
+        v.contains("auth") || v.contains("token") || v.contains("unauthorized")
+    }
+
+    match payload {
+        Payload::Text(values) => values.iter().any(|value| {
+            if let Some(obj) = value.as_object() {
+                for key in ["error", "message", "reason", "code"] {
+                    if let Some(field) = obj.get(key) {
+                        if let Some(s) = field.as_str() {
+                            if string_has_auth_keyword(s) {
+                                return true;
+                            }
+                        } else if field.is_number() && field.to_string() == "401" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            value
+                .as_str()
+                .map(string_has_auth_keyword)
+                .unwrap_or(false)
+        }),
+        Payload::String(s) => string_has_auth_keyword(s),
+        Payload::Binary(_) => false,
+    }
+}
+
 pub struct SocketBackendClient {
     socket: Client,
     nodes: Arc<RwLock<Vec<SocketNodeData>>>,
@@ -358,15 +389,9 @@ impl SocketBackendClient {
                     async move {
                         error!("Socket.IO server error: {:?}", err);
                         // If auth rejected, clear token so next reconnect fetches a new one
-                        if let Payload::Text(values) = &err {
-                            let txt = values
-                                .first()
-                                .map(|v| v.to_string().to_lowercase())
-                                .unwrap_or_default();
-                            if txt.contains("auth") || txt.contains("token") || txt.contains("unauthorized") {
-                                tm.invalidate_token().await;
-                                warn!("Auth-related socket error detected, cached token invalidated");
-                            }
+                        if is_auth_error_payload(&err) {
+                            tm.invalidate_token().await;
+                            warn!("Auth-related socket error detected, cached token invalidated");
                         }
                     }
                     .boxed()
