@@ -64,6 +64,18 @@ struct Args {
     #[arg(long, env = "SOCKET_PATH", default_value = "/api/socket.io")]
     socket_path: String,
 
+    /// Challenge endpoint path for token issuance
+    #[arg(long, env = "CHALLENGE_PATH", default_value = "/api/cluster/challenge")]
+    challenge_path: String,
+
+    /// Token exchange endpoint path for token issuance
+    #[arg(long, env = "TOKEN_PATH", default_value = "/api/cluster/token")]
+    token_path: String,
+
+    /// Token TTL hint in seconds (used when response does not include expiresIn)
+    #[arg(long, env = "TOKEN_TTL_SECONDS", default_value = "300")]
+    token_ttl_seconds: u64,
+
     /// User-Agent header sent during Socket.IO connection
     #[arg(
         long,
@@ -128,6 +140,9 @@ async fn main() -> Result<()> {
         cluster_id: args.cluster_id.clone(),
         cluster_secret: args.cluster_secret.clone(),
         socket_path: args.socket_path.clone(),
+        challenge_path: args.challenge_path.clone(),
+        token_path: args.token_path.clone(),
+        token_ttl_seconds: args.token_ttl_seconds,
     };
 
     let socket_client = Arc::new(

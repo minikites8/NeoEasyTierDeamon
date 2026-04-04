@@ -17,6 +17,12 @@ pub struct SocketConnectionConfig {
     pub cluster_secret: String,
     /// Socket.IO endpoint path (e.g. "/api/socket.io")
     pub socket_path: String,
+    /// HTTP challenge endpoint path used to mint connection token
+    pub challenge_path: String,
+    /// HTTP token exchange endpoint path used to exchange challenge signature for token
+    pub token_path: String,
+    /// Optional token TTL hint (seconds), used for proactive refresh
+    pub token_ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone)]

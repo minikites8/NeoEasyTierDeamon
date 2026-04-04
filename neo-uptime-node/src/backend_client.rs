@@ -1,24 +1,23 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::FutureExt;
+use hmac::{Hmac, Mac};
+use reqwest::Client as HttpClient;
 use rust_socketio::{
-    asynchronous::{Client, ClientBuilder},
+    asynchronous::{Client, ClientBuilder, ReconnectSettings},
     Payload, TransportType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use sha2::Sha256;
+use std::{sync::Arc, time::{Duration, Instant}};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use crate::config::SocketConnectionConfig;
 
-// ---------------------------------------------------------------------------
-// Data structures received from the Socket.IO server
-// ---------------------------------------------------------------------------
+type HmacSha256 = Hmac<Sha256>;
 
-/// Node data pushed by the server over the "nodes" event.
-/// Field names use camelCase as sent by the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SocketNodeData {
@@ -38,28 +37,14 @@ pub struct SocketNodeData {
     pub maximum_bandwidth: i64,
 }
 
-// ---------------------------------------------------------------------------
-// Data structure submitted to the server via the "report" event
-// ---------------------------------------------------------------------------
-
-/// Single-node ping entry sent in the "report" event payload.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PingReport {
-    /// nodeId as received in SocketNodeData
     pub node_id: i32,
-    /// Round-trip latency in milliseconds; 0 when the node is unreachable
     pub ping: i32,
-    /// ISO-8601 timestamp of when the measurement was taken
     pub timestamp: String,
 }
 
-// ---------------------------------------------------------------------------
-// Legacy BackendPeer kept for compatibility with sync_peers_to_db
-// ---------------------------------------------------------------------------
-
-/// Backend peer representation used internally by the sync logic.
-/// Converted from SocketNodeData when nodes are received.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendPeer {
     pub id: i32,
@@ -72,7 +57,6 @@ pub struct BackendPeer {
     pub location: Option<String>,
     #[serde(default)]
     pub allow_relay: Option<bool>,
-    /// "host:port" combined
     #[serde(default)]
     pub public_ip: Option<String>,
     #[serde(default)]
@@ -111,50 +95,242 @@ impl From<&SocketNodeData> for BackendPeer {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Socket.IO backend client
-// ---------------------------------------------------------------------------
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChallengeResponse {
+    challenge: String,
+    #[serde(default)]
+    timestamp: Option<i64>,
+    #[serde(default)]
+    nonce: Option<String>,
+}
 
-/// Persistent Socket.IO client that:
-/// - Connects to the upstream server with cluster authentication
-/// - Stores the latest node list received via the "nodes" event
-/// - Emits ping reports via the "report" event
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenExchangeRequest {
+    cluster_id: String,
+    signature: String,
+    challenge: String,
+    timestamp: i64,
+    nonce: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenExchangeResponse {
+    token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedToken {
+    token: String,
+    expires_at: Option<Instant>,
+}
+
+#[derive(Clone)]
+pub struct TokenManager {
+    http: HttpClient,
+    config: SocketConnectionConfig,
+    token: Arc<Mutex<Option<CachedToken>>>,
+}
+
+impl TokenManager {
+    pub fn new(config: SocketConnectionConfig) -> Result<Self> {
+        let http = HttpClient::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .context("Failed to build HTTP client for token manager")?;
+
+        Ok(Self {
+            http,
+            config,
+            token: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    pub async fn get_token(&self) -> Result<String> {
+        let mut guard = self.token.lock().await;
+        if let Some(cached) = guard.as_ref() {
+            let valid = cached
+                .expires_at
+                .map(|exp| Instant::now() < exp)
+                .unwrap_or(true);
+            if valid {
+                return Ok(cached.token.clone());
+            }
+        }
+
+        let (token, expires_in) = self.fetch_token().await?;
+        let expires_at = expires_in.map(|ttl| {
+            // refresh 10s early
+            let refresh_in = ttl.saturating_sub(10);
+            Instant::now() + Duration::from_secs(refresh_in)
+        });
+
+        *guard = Some(CachedToken {
+            token: token.clone(),
+            expires_at,
+        });
+
+        Ok(token)
+    }
+
+    pub async fn invalidate_token(&self) {
+        let mut guard = self.token.lock().await;
+        *guard = None;
+    }
+
+    async fn fetch_token(&self) -> Result<(String, Option<u64>)> {
+        let challenge_url = build_url(&self.config.url, &self.config.challenge_path);
+        let token_url = build_url(&self.config.url, &self.config.token_path);
+
+        let challenge_resp = self
+            .http
+            .get(&challenge_url)
+            .query(&[("clusterId", self.config.cluster_id.as_str())])
+            .header("User-Agent", self.config.user_agent.clone())
+            .send()
+            .await
+            .context("Failed to request challenge")?;
+
+        if !challenge_resp.status().is_success() {
+            bail!(
+                "Challenge request failed: status={} body={}",
+                challenge_resp.status(),
+                challenge_resp.text().await.unwrap_or_default()
+            );
+        }
+
+        let challenge_data: ChallengeResponse = challenge_resp
+            .json()
+            .await
+            .context("Failed to parse challenge response")?;
+
+        let timestamp = challenge_data
+            .timestamp
+            .unwrap_or_else(|| Utc::now().timestamp());
+        let nonce = challenge_data
+            .nonce
+            .unwrap_or_else(|| Utc::now().timestamp_nanos_opt().unwrap_or_default().to_string());
+
+        let signature = sign_challenge(
+            &self.config.cluster_secret,
+            &self.config.cluster_id,
+            &challenge_data.challenge,
+            timestamp,
+            &nonce,
+        )?;
+
+        let exchange_body = TokenExchangeRequest {
+            cluster_id: self.config.cluster_id.clone(),
+            signature,
+            challenge: challenge_data.challenge,
+            timestamp,
+            nonce,
+        };
+
+        let token_resp = self
+            .http
+            .post(&token_url)
+            .header("User-Agent", self.config.user_agent.clone())
+            .json(&exchange_body)
+            .send()
+            .await
+            .context("Failed to exchange challenge for token")?;
+
+        if !token_resp.status().is_success() {
+            bail!(
+                "Token exchange failed: status={} body={}",
+                token_resp.status(),
+                token_resp.text().await.unwrap_or_default()
+            );
+        }
+
+        let token_data: TokenExchangeResponse = token_resp
+            .json()
+            .await
+            .context("Failed to parse token response")?;
+
+        if token_data.token.is_empty() {
+            bail!("Empty token from token exchange endpoint");
+        }
+
+        let ttl = token_data
+            .expires_in
+            .or(Some(self.config.token_ttl_seconds))
+            .filter(|v| *v > 0);
+
+        Ok((token_data.token, ttl))
+    }
+}
+
+fn sign_challenge(
+    cluster_secret: &str,
+    cluster_id: &str,
+    challenge: &str,
+    timestamp: i64,
+    nonce: &str,
+) -> Result<String> {
+    let mut mac = HmacSha256::new_from_slice(cluster_secret.as_bytes())
+        .context("Failed to initialize HMAC with cluster secret")?;
+
+    // Canonical payload: clusterId\nchallenge\ntimestamp\nnonce
+    let payload = format!("{}\n{}\n{}\n{}", cluster_id, challenge, timestamp, nonce);
+    mac.update(payload.as_bytes());
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn build_url(base: &str, path: &str) -> String {
+    if base.ends_with('/') {
+        format!("{}{}", base.trim_end_matches('/'), path)
+    } else {
+        format!("{}{}", base, path)
+    }
+}
+
 pub struct SocketBackendClient {
     socket: Client,
-    /// Shared node list updated whenever a "nodes" event arrives
     nodes: Arc<RwLock<Vec<SocketNodeData>>>,
 }
 
 impl SocketBackendClient {
-    /// Connect to the Socket.IO server and register event handlers.
     pub async fn new(config: &SocketConnectionConfig) -> Result<Self> {
         let nodes: Arc<RwLock<Vec<SocketNodeData>>> = Arc::new(RwLock::new(Vec::new()));
         let nodes_for_cb = nodes.clone();
 
-        // Combine base URL with socket path (rust_socketio uses URL path for the socket endpoint)
-        let full_url = if config.url.ends_with('/') {
-            format!(
-                "{}{}",
-                config.url.trim_end_matches('/'),
-                config.socket_path
-            )
-        } else {
-            format!("{}{}", config.url, config.socket_path)
-        };
+        let token_manager = Arc::new(TokenManager::new(config.clone())?);
+        let token = token_manager
+            .get_token()
+            .await
+            .context("Failed to fetch initial auth token")?;
+
+        let full_url = build_url(&config.url, &config.socket_path);
+
+        let tm_for_reconnect = token_manager.clone();
 
         let socket = ClientBuilder::new(full_url)
             .transport_type(TransportType::Websocket)
             .opening_header("User-Agent", config.user_agent.clone())
-            .auth(json!({
-                "clusterId":     config.cluster_id,
-                "clusterSecret": config.cluster_secret
-            }))
+            .auth(json!({ "token": token }))
+            .on_reconnect(move || {
+                let tm = tm_for_reconnect.clone();
+                async move {
+                    let mut settings = ReconnectSettings::new();
+                    match tm.get_token().await {
+                        Ok(token) => settings.auth(json!({ "token": token })),
+                        Err(e) => error!("Failed to refresh auth token for reconnect: {}", e),
+                    }
+                    settings
+                }
+                .boxed()
+            })
             .on("nodes", move |payload: Payload, _: Client| {
                 let nodes = nodes_for_cb.clone();
                 async move {
                     match payload {
                         Payload::Text(values) => {
-                            // The first argument of the event is the node array
                             if let Some(first) = values.first() {
                                 match serde_json::from_value::<Vec<SocketNodeData>>(first.clone()) {
                                     Ok(node_list) => {
@@ -170,18 +346,31 @@ impl SocketBackendClient {
                                 }
                             }
                         }
-                        other => {
-                            warn!("Unexpected payload type in 'nodes' event: {:?}", other);
-                        }
+                        other => warn!("Unexpected payload type in 'nodes' event: {:?}", other),
                     }
                 }
                 .boxed()
             })
-            .on("error", |err: Payload, _: Client| {
-                async move {
-                    error!("Socket.IO server error: {:?}", err);
+            .on("error", {
+                let tm = token_manager.clone();
+                move |err: Payload, _: Client| {
+                    let tm = tm.clone();
+                    async move {
+                        error!("Socket.IO server error: {:?}", err);
+                        // If auth rejected, clear token so next reconnect fetches a new one
+                        if let Payload::Text(values) = &err {
+                            let txt = values
+                                .first()
+                                .map(|v| v.to_string().to_lowercase())
+                                .unwrap_or_default();
+                            if txt.contains("auth") || txt.contains("token") || txt.contains("unauthorized") {
+                                tm.invalidate_token().await;
+                                warn!("Auth-related socket error detected, cached token invalidated");
+                            }
+                        }
+                    }
+                    .boxed()
                 }
-                .boxed()
             })
             .on("disconnect", |_: Payload, _: Client| {
                 async move {
@@ -198,34 +387,31 @@ impl SocketBackendClient {
         Ok(Self { socket, nodes })
     }
 
-    /// Return a snapshot of the most recently received node list.
     pub async fn get_nodes(&self) -> Vec<SocketNodeData> {
         self.nodes.read().await.clone()
     }
 
-    /// Return the most recently received nodes converted to BackendPeer for
-    /// compatibility with the existing sync_peers_to_db helper.
     pub async fn fetch_peers(&self) -> Result<Vec<BackendPeer>> {
         let nodes = self.get_nodes().await;
         Ok(nodes.iter().map(BackendPeer::from).collect())
     }
 
-    /// Emit a batch of ping reports to the server via the "report" event.
     pub async fn submit_ping_reports(&self, reports: Vec<PingReport>) -> Result<()> {
         if reports.is_empty() {
             return Ok(());
         }
+
         let payload = serde_json::to_value(&reports)
             .context("Failed to serialize ping reports")?;
         self.socket
             .emit("report", payload)
             .await
             .context("Failed to emit 'report' event to Socket.IO server")?;
+
         debug!("Submitted {} ping report(s) to server", reports.len());
         Ok(())
     }
 
-    /// Disconnect cleanly from the server.
     pub async fn disconnect(self) -> Result<()> {
         self.socket
             .disconnect()
@@ -235,8 +421,6 @@ impl SocketBackendClient {
     }
 }
 
-/// Build a `PingReport` with the current UTC timestamp.
-/// `ping_ms` is the round-trip time in milliseconds (≥ 0); pass 0 for unreachable nodes.
 pub fn make_ping_report(node_id: i32, ping_ms: i32) -> PingReport {
     PingReport {
         node_id,
@@ -244,10 +428,6 @@ pub fn make_ping_report(node_id: i32, ping_ms: i32) -> PingReport {
         timestamp: Utc::now().to_rfc3339(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -349,5 +529,38 @@ mod tests {
         assert_eq!(report.node_id, 5);
         assert_eq!(report.ping, 123);
         assert!(!report.timestamp.is_empty());
+    }
+
+    #[test]
+    fn test_sign_challenge_is_deterministic() {
+        let sig1 = sign_challenge("secret", "cluster-1", "ch", 100, "n").unwrap();
+        let sig2 = sign_challenge("secret", "cluster-1", "ch", 100, "n").unwrap();
+        assert_eq!(sig1, sig2);
+        assert!(!sig1.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_token_manager_invalidate() {
+        let cfg = SocketConnectionConfig {
+            url: "http://localhost:8081".to_string(),
+            user_agent: "ua".to_string(),
+            cluster_id: "cid".to_string(),
+            cluster_secret: "sec".to_string(),
+            socket_path: "/api/socket.io".to_string(),
+            challenge_path: "/api/cluster/challenge".to_string(),
+            token_path: "/api/cluster/token".to_string(),
+            token_ttl_seconds: 60,
+        };
+        let tm = TokenManager::new(cfg).unwrap();
+        {
+            let mut g = tm.token.lock().await;
+            *g = Some(CachedToken {
+                token: "abc".to_string(),
+                expires_at: None,
+            });
+        }
+        tm.invalidate_token().await;
+        let g = tm.token.lock().await;
+        assert!(g.is_none());
     }
 }
