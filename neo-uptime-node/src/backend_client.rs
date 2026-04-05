@@ -8,7 +8,7 @@ use rust_socketio::{
     Payload, TransportType,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::Sha256;
 use std::{sync::Arc, time::{Duration, Instant}};
 use tokio::sync::{Mutex, RwLock};
@@ -95,16 +95,6 @@ impl From<&SocketNodeData> for BackendPeer {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChallengeResponse {
-    challenge: String,
-    #[serde(default)]
-    timestamp: Option<i64>,
-    #[serde(default)]
-    nonce: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenExchangeRequest {
@@ -113,14 +103,6 @@ struct TokenExchangeRequest {
     challenge: String,
     timestamp: i64,
     nonce: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TokenExchangeResponse {
-    token: String,
-    #[serde(default)]
-    expires_in: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -203,22 +185,33 @@ impl TokenManager {
             );
         }
 
-        let challenge_data: ChallengeResponse = challenge_resp
-            .json()
+        let challenge_text = challenge_resp
+            .text()
             .await
-            .context("Failed to parse challenge response")?;
+            .context("Failed to read challenge response body")?;
+        let challenge_value: Value = serde_json::from_str(&challenge_text).with_context(|| {
+            format!(
+                "Failed to parse challenge response as JSON, body={}",
+                truncate_for_log(&challenge_text)
+            )
+        })?;
+        let (challenge, challenge_timestamp, challenge_nonce) =
+            parse_challenge_response(&challenge_value).with_context(|| {
+                format!(
+                    "Failed to parse challenge response fields, body={}",
+                    truncate_for_log(&challenge_text)
+                )
+            })?;
 
-        let timestamp = challenge_data
-            .timestamp
+        let timestamp = challenge_timestamp
             .unwrap_or_else(|| Utc::now().timestamp());
-        let nonce = challenge_data
-            .nonce
+        let nonce = challenge_nonce
             .unwrap_or_else(|| Utc::now().timestamp_millis().to_string());
 
         let signature = sign_challenge(
             &self.config.cluster_secret,
             &self.config.cluster_id,
-            &challenge_data.challenge,
+            &challenge,
             timestamp,
             &nonce,
         )?;
@@ -226,7 +219,7 @@ impl TokenManager {
         let exchange_body = TokenExchangeRequest {
             cluster_id: self.config.cluster_id.clone(),
             signature,
-            challenge: challenge_data.challenge,
+            challenge,
             timestamp,
             nonce,
         };
@@ -248,22 +241,100 @@ impl TokenManager {
             );
         }
 
-        let token_data: TokenExchangeResponse = token_resp
-            .json()
+        let token_text = token_resp
+            .text()
             .await
-            .context("Failed to parse token response")?;
+            .context("Failed to read token response body")?;
+        let token_value: Value = serde_json::from_str(&token_text).with_context(|| {
+            format!(
+                "Failed to parse token response as JSON, body={}",
+                truncate_for_log(&token_text)
+            )
+        })?;
+        let (token, expires_in) = parse_token_response(&token_value).with_context(|| {
+            format!(
+                "Failed to parse token response fields, body={}",
+                truncate_for_log(&token_text)
+            )
+        })?;
 
-        if token_data.token.is_empty() {
+        if token.is_empty() {
             bail!("Empty token from token exchange endpoint");
         }
 
-        let ttl = token_data
-            .expires_in
+        let ttl = expires_in
             .or(Some(self.config.token_ttl_seconds))
             .filter(|v| *v > 0);
 
-        Ok((token_data.token, ttl))
+        Ok((token, ttl))
     }
+}
+
+fn truncate_for_log(s: &str) -> String {
+    const LIMIT: usize = 512;
+    if s.len() <= LIMIT {
+        s.to_string()
+    } else {
+        format!("{}...(truncated)", &s[..LIMIT])
+    }
+}
+
+fn as_object_candidates<'a>(value: &'a Value) -> Vec<&'a serde_json::Map<String, Value>> {
+    let mut out = Vec::new();
+    if let Some(obj) = value.as_object() {
+        out.push(obj);
+        for key in ["data", "result", "payload"] {
+            if let Some(nested) = obj.get(key).and_then(|v| v.as_object()) {
+                out.push(nested);
+            }
+        }
+    }
+    out
+}
+
+fn parse_challenge_response(value: &Value) -> Result<(String, Option<i64>, Option<String>)> {
+    for obj in as_object_candidates(value) {
+        let challenge = obj
+            .get("challenge")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("challengeStr").and_then(|v| v.as_str()))
+            .map(str::to_string);
+        if let Some(challenge) = challenge {
+            let timestamp = obj
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .or_else(|| obj.get("ts").and_then(|v| v.as_i64()))
+                .or_else(|| obj.get("time").and_then(|v| v.as_i64()));
+            let nonce = obj
+                .get("nonce")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("random").and_then(|v| v.as_str()))
+                .map(str::to_string);
+            return Ok((challenge, timestamp, nonce));
+        }
+    }
+
+    bail!("missing field `challenge`")
+}
+
+fn parse_token_response(value: &Value) -> Result<(String, Option<u64>)> {
+    for obj in as_object_candidates(value) {
+        let token = obj
+            .get("token")
+            .and_then(|v| v.as_str())
+            .or_else(|| obj.get("accessToken").and_then(|v| v.as_str()))
+            .map(str::to_string);
+        if let Some(token) = token {
+            let expires_in = obj
+                .get("expiresIn")
+                .and_then(|v| v.as_u64())
+                .or_else(|| obj.get("expires_in").and_then(|v| v.as_u64()))
+                .or_else(|| obj.get("ttl").and_then(|v| v.as_u64()));
+            return Ok((token, expires_in));
+        }
+    }
+
+    bail!("missing field `token`")
 }
 
 fn sign_challenge(
@@ -562,6 +633,47 @@ mod tests {
         let sig2 = sign_challenge("secret", "cluster-1", "ch", 100, "n").unwrap();
         assert_eq!(sig1, sig2);
         assert!(!sig1.is_empty());
+    }
+
+    #[test]
+    fn test_parse_challenge_response_top_level() {
+        let v = serde_json::json!({
+            "challenge": "abc",
+            "timestamp": 100,
+            "nonce": "xyz"
+        });
+        let (challenge, ts, nonce) = parse_challenge_response(&v).unwrap();
+        assert_eq!(challenge, "abc");
+        assert_eq!(ts, Some(100));
+        assert_eq!(nonce.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn test_parse_challenge_response_nested_data() {
+        let v = serde_json::json!({
+            "success": true,
+            "data": {
+                "challenge": "abc"
+            }
+        });
+        let (challenge, ts, nonce) = parse_challenge_response(&v).unwrap();
+        assert_eq!(challenge, "abc");
+        assert!(ts.is_none());
+        assert!(nonce.is_none());
+    }
+
+    #[test]
+    fn test_parse_token_response_nested_result() {
+        let v = serde_json::json!({
+            "code": 0,
+            "result": {
+                "token": "tok",
+                "expiresIn": 60
+            }
+        });
+        let (token, expires_in) = parse_token_response(&v).unwrap();
+        assert_eq!(token, "tok");
+        assert_eq!(expires_in, Some(60));
     }
 
     #[tokio::test]
